@@ -5,6 +5,7 @@
 .php_cs.cache
 /.env
 /composer.phar
+/reference
 
 /app/bootstrap*
 /app/tests.bootstrap*
@@ -71,6 +72,7 @@
 !/plugins/MauticSocialBundle
 !/plugins/MauticZapierBundle
 !/plugins/index.html
+!/plugins/MauticNetSuiteBundle
 
 /themes/*
 !/themes/aurora
