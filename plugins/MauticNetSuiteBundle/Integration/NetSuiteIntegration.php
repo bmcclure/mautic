@@ -153,14 +153,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                     $apiHelper = $this->getApiHelper();
 
                     try {
-                        foreach ($apiHelper->getFields($object) as $field) {
-                            $fields[$object][$field->internalId] = [
-                                'type' => $this->getMauticFieldType($field->fieldType),
-                                'label' => $field->label,
-                                'required' => $field->isMandatory,
-                            ];
-                        }
-
+                        $fields[$object] = $apiHelper->getFields($object);
                         $this->cache->set('leadFields' . $settings['cache_suffix'], $fields[$object]);
                     } catch (NetSuiteApiException $exception) {
                         $this->logIntegrationError($exception);
@@ -175,18 +168,5 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         }
 
         return $fields;
-    }
-
-    protected function getMauticFieldType($netSuiteFieldType) {
-        $map = [
-            CustomizationFieldType::_checkBox => self::FIELD_TYPE_BOOL,
-            CustomizationFieldType::_currency => self::FIELD_TYPE_NUMBER,
-            CustomizationFieldType::_date => self::FIELD_TYPE_DATE,
-            CustomizationFieldType::_datetime => self::FIELD_TYPE_DATETIME,
-            CustomizationFieldType::_decimalNumber => self::FIELD_TYPE_NUMBER,
-            CustomizationFieldType::_integerNumber => self::FIELD_TYPE_NUMBER,
-        ];
-
-        return array_key_exists($netSuiteFieldType, $map) ? $map[$netSuiteFieldType] : self::FIELD_TYPE_STRING;
     }
 }

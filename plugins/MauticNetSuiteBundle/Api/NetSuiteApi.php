@@ -3,7 +3,10 @@
 namespace MauticPlugin\MauticNetSuiteBundle\Api;
 
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
+use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\CrmCustomField;
+use NetSuite\Classes\Customer;
+use NetSuite\Classes\CustomizationFieldType;
 use NetSuite\Classes\GetAllRecord;
 use NetSuite\Classes\GetAllRequest;
 use NetSuite\Classes\GetAllResult;
@@ -41,21 +44,10 @@ class NetSuiteApi extends CrmApi {
         return $this->netSuiteService;
     }
 
-    protected function getNetSuiteRecordType($object = null) {
-
-        // @todo verify mapping
-        $map = [
-            'contacts' => 'contact',
-            'company' => 'customer',
-        ];
-
-        return array_key_exists($object, $map) ? $map[$object] : $object;
-    }
-
     /**
      * @param string|null $object
      *
-     * @return CrmCustomField[]
+     * @return array
      *
      * @throws NetSuiteApiException
      */
@@ -92,13 +84,244 @@ class NetSuiteApi extends CrmApi {
                 $selectRecordType = $record->selectRecordType;
 
                 if ($selectRecordType->type === $recordType) {
-                    $fields[] = $record;
+                    $fields[$record->internalId] = [
+                        'type' => $this->getFieldDataType($record->fieldType),
+                        'label' => $record->label,
+                        'required' => $record->isMandatory,
+                    ];
                 }
             }
 
-            $this->apiFields[$object] = $fields;
+            $this->apiFields[$object] = array_merge($this->getDefaultFields($recordType), $fields);
         }
 
         return $this->apiFields[$object];
+    }
+
+    protected function getFieldDataType($fieldType) {
+        $map = [
+            CustomizationFieldType::_checkBox => NetSuiteIntegration::FIELD_TYPE_BOOL,
+            CustomizationFieldType::_currency => NetSuiteIntegration::FIELD_TYPE_NUMBER,
+            CustomizationFieldType::_date => NetSuiteIntegration::FIELD_TYPE_DATE,
+            CustomizationFieldType::_datetime => NetSuiteIntegration::FIELD_TYPE_DATETIME,
+            CustomizationFieldType::_decimalNumber => NetSuiteIntegration::FIELD_TYPE_NUMBER,
+            CustomizationFieldType::_integerNumber => NetSuiteIntegration::FIELD_TYPE_NUMBER,
+        ];
+
+        return array_key_exists($fieldType, $map) ? $map[$fieldType] : NetSuiteIntegration::FIELD_TYPE_STRING;
+    }
+
+    protected function getNetSuiteRecordType($object = null) {
+
+        $map = [
+            'company' => 'customer',
+            'contacts' => 'contact',
+        ];
+
+        return array_key_exists($object, $map) ? $map[$object] : $object;
+    }
+
+    protected function getDefaultFields($recordType) {
+        $fields = [];
+
+        if ($recordType === 'customer') {
+            $fields = [
+                'accountNumber' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Account',
+                    'required' => false,
+                ],
+                'category' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Category',
+                    'required' => false,
+                ],
+                'comments' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Comments',
+                    'required' => false,
+                ],
+                'companyName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Company Name',
+                    'required' => true,
+                ],
+                'currency' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Currency',
+                    'required' => false,
+                ],
+                'email' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Email',
+                    'required' => false,
+                ],
+                'emailPreference' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Email Preference',
+                    'required' => false,
+                ],
+                'fax' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Fax',
+                    'required' => false,
+                ],
+                'firstName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'First Name',
+                    'required' => false,
+                ],
+                'firstVisit' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'First Visit',
+                    'required' => false,
+                ],
+                'homePhone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Home Phone',
+                    'required' => false,
+                ],
+                'keywords' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Keywords',
+                    'required' => false,
+                ],
+                'language' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Language',
+                    'required' => false,
+                ],
+                'lastName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Last Name',
+                    'required' => false,
+                ],
+                'leadSource' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Lead Source',
+                    'required' => false,
+                ],
+                'middleName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Middle Name',
+                    'required' => false,
+                ],
+                'mobilePhone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Mobile Phone',
+                    'required' => false,
+                ],
+                'phone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Phone',
+                    'required' => false,
+                ],
+                'salutation' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Salutation',
+                    'required' => false,
+                ],
+                'startDate' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_DATE,
+                    'label' => 'Start Date',
+                    'required' => false,
+                ],
+                'territory' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Territory',
+                    'required' => false,
+                ],
+                'title' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Title',
+                    'required' => false,
+                ],
+                'url' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'URL',
+                    'required' => false,
+                ],
+                'visits' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_NUMBER,
+                    'label' => 'Number of Visits',
+                    'required' => false,
+                ],
+            ];
+        } elseif ($recordType === 'contact') {
+            $fields = [
+                'comments' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Comments',
+                    'required' => false,
+                ],
+                'company' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Company',
+                    'required' => true,
+                ],
+                'contactSource' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Contact Source',
+                    'required' => false,
+                ],
+                'email' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Email',
+                    'required' => true,
+                ],
+                'fax' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Fax',
+                    'required' => false,
+                ],
+                'firstName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'First Name',
+                    'required' => true,
+                ],
+                'homePhone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Home Phone',
+                    'required' => false,
+                ],
+                'lastName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Last Name',
+                    'required' => true,
+                ],
+                'middleName' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Middle Name',
+                    'required' => false,
+                ],
+                'mobilePhone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Mobile Phone',
+                    'required' => false,
+                ],
+                'officePhone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Office Phone',
+                    'required' => false,
+                ],
+                'phone' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Phone',
+                    'required' => false,
+                ],
+                'salutation' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Salutation',
+                    'required' => false,
+                ],
+                'title' => [
+                    'type' => NetSuiteIntegration::FIELD_TYPE_STRING,
+                    'label' => 'Title',
+                    'required' => false,
+                ],
+            ];
+        }
+
+        return $fields;
     }
 }
