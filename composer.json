@@ -113,7 +113,8 @@
         "ramsey/uuid": "^3.7",
         "sendgrid/sendgrid": "~6.0",
         "noxlogic/ratelimit-bundle": "^1.11",
-        "sensio/framework-extra-bundle": "~3.0"
+        "sensio/framework-extra-bundle": "~3.0",
+        "ryanwinchester/netsuite-php": "^2019.1"
     },
     "require-dev": {
         "symfony/web-profiler-bundle": "~2.8",

@@ -3,65 +3,102 @@
 namespace MauticPlugin\MauticNetSuiteBundle\Api;
 
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
+use NetSuite\Classes\CrmCustomField;
+use NetSuite\Classes\GetAllRecord;
+use NetSuite\Classes\GetAllRequest;
+use NetSuite\Classes\GetAllResult;
+use NetSuite\Classes\RecordList;
+use NetSuite\Classes\RecordRef;
+use NetSuite\Classes\Status;
+use NetSuite\NetSuiteService;
 
 class NetSuiteApi extends CrmApi {
-    protected function request($operation, $parameters = [], $method = 'GET', $object = 'contacts')
-    {
-        // @todo implement
+    private $apiFields = [];
+
+    /** @var NetSuiteService */
+    private $netSuiteService;
+
+    protected function getNetSuiteConfig() {
+        $keys = $this->integration->getKeys();
+
+        return [
+            'endpoint' => '2019_1',
+            'host' => $keys['netsuite_service_url'],
+            'account' => $keys['netsuite_account'],
+            'consumerKey' => $keys['netsuite_consumer_key'],
+            'consumerSecret' => $keys['netsuite_consumer_secret'],
+            'token' => $keys['netsuite_token_key'],
+            'tokenSecret' => $keys['netsuite_token_secret'],
+        ];
+    }
+
+    public function getNetSuiteService() {
+        if (!isset($this->netSuiteService)) {
+            $config = $this->getNetSuiteConfig();
+            $this->netSuiteService = new NetSuiteService($config);
+        }
+
+        return $this->netSuiteService;
+    }
+
+    protected function getNetSuiteRecordType($object = null) {
+
+        // @todo verify mapping
+        $map = [
+            'contacts' => 'contact',
+            'company' => 'customer',
+        ];
+
+        return array_key_exists($object, $map) ? $map[$object] : $object;
     }
 
     /**
-     * @return mixed
+     * @param string|null $object
+     *
+     * @return CrmCustomField[]
+     *
+     * @throws NetSuiteApiException
      */
-    public function getLeadFields($object = 'contacts')
+    public function getFields($object = null)
     {
-        // @todo implement
-    }
+        if (empty($this->apiFields[$object])) {
+            $recordType = $this->getNetSuiteRecordType($object);
+            $service = $this->getNetSuiteService();
 
-    /**
-     * Creates Hubspot lead.
-     *
-     * @param array $data
-     *
-     * @return mixed
-     */
-    public function createLead(array $data, $lead, $updateLink = false)
-    {
-        // @todo implement
-    }
+            $request = new GetAllRequest();
+            $request->record = new GetAllRecord();
+            $request->record->recordType = 'crmCustomField';
 
-    /**
-     * gets Hubspot contact.
-     *
-     * @param array $data
-     *
-     * @return mixed
-     */
-    public function getContacts($params = [])
-    {
-        // @todo implement
-    }
+            $response = $service->getAll($request);
 
-    /**
-     * gets Hubspot company.
-     *
-     * @param array $data
-     *
-     * @return mixed
-     */
-    public function getCompanies($params, $id)
-    {
-        // @todo implement
-    }
+            /** @var GetAllResult $result */
+            $result = $response->getAllResult;
 
-    /**
-     * @param        $propertyName
-     * @param string $object
-     *
-     * @return mixed|string
-     */
-    public function createProperty($propertyName, $object = 'properties')
-    {
-        // @todo implement
+            /** @var Status $status */
+            $status = $result->status;
+
+            if (!$status->isSuccess) {
+                throw new NetSuiteApiException('Unable to retrieve custom fields from NetSuite');
+            }
+
+            /** @var RecordList $list */
+            $list = $result->recordList;
+
+            $fields = [];
+
+            /** @var CrmCustomField $record */
+            foreach ($list->record as $record) {
+                /** @var RecordRef $selectRecordType */
+                $selectRecordType = $record->selectRecordType;
+
+                if ($selectRecordType->type === $recordType) {
+                    $fields[] = $record;
+                }
+            }
+
+            $this->apiFields[$object] = $fields;
+        }
+
+        return $this->apiFields[$object];
     }
 }

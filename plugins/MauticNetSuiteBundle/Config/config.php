@@ -9,6 +9,8 @@
  * @license     GNU/GPLv3 http://www.gnu.org/licenses/gpl-3.0.html
  */
 
+use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
+
 return [
     'name'        => 'NetSuite',
     'description' => 'Enables integration with the NetSuite CRM.',
@@ -17,7 +19,7 @@ return [
     'services' => [
         'integrations' => [
             'mautic.integration.netsuite' => [
-                'class'     => \MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration::class,
+                'class'     => NetSuiteIntegration::class,
                 'arguments' => [],
             ],
         ],

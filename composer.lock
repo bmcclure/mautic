@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "76ca1f3e88950d50351be721720c3e0a",
+    "content-hash": "bb75258e86f85c29cea8030238c94e71",
     "packages": [
         {
             "name": "aws/aws-sdk-php",
@@ -4787,6 +4787,61 @@
                 "xmldsig"
             ],
             "time": "2017-08-31T09:27:07+00:00"
+        },
+        {
+            "name": "ryanwinchester/netsuite-php",
+            "version": "v2019.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/ryanwinchester/netsuite-php.git",
+                "reference": "eb0866d78cb17e3896309f21554f49d1af139c02"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/ryanwinchester/netsuite-php/zipball/eb0866d78cb17e3896309f21554f49d1af139c02",
+                "reference": "eb0866d78cb17e3896309f21554f49d1af139c02",
+                "shasum": ""
+            },
+            "require": {
+                "ext-openssl": "*",
+                "ext-simplexml": "*",
+                "ext-soap": "*",
+                "paragonie/random_compat": ">=1",
+                "php": ">=5.3.0"
+            },
+            "require-dev": {
+                "phpspec/phpspec": "^2.4"
+            },
+            "suggest": {
+                "symfony/dotenv": "Provides loading a .env file for obtaining config variables",
+                "vlucas/phpdotenv": "Provides loading a .env file for obtaining config variables"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "NetSuite\\": "src/"
+                },
+                "files": [
+                    "src/includes/functions.php"
+                ]
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "Apache-2.0"
+            ],
+            "authors": [
+                {
+                    "name": "Ryan Winchester (fungku)",
+                    "email": "fungku@gmail.com"
+                }
+            ],
+            "description": "NetSuite PHP API wrapper",
+            "keywords": [
+                "api",
+                "netsuite",
+                "php"
+            ],
+            "time": "2019-10-19T03:25:56+00:00"
         },
         {
             "name": "sendgrid/php-http-client",
