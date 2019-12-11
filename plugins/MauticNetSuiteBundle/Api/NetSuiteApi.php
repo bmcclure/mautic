@@ -5,6 +5,7 @@ namespace MauticPlugin\MauticNetSuiteBundle\Api;
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
+use NetSuite\Classes\AddListResponse;
 use NetSuite\Classes\BooleanCustomFieldRef;
 use NetSuite\Classes\Contact;
 use NetSuite\Classes\ContactSearchBasic;
@@ -30,8 +31,13 @@ use NetSuite\Classes\SearchResult;
 use NetSuite\Classes\SearchStringField;
 use NetSuite\Classes\SearchStringFieldOperator;
 use NetSuite\Classes\Status;
+use NetSuite\Classes\StatusDetail;
+use NetSuite\Classes\StatusDetailType;
 use NetSuite\Classes\StringCustomFieldRef;
 use NetSuite\Classes\UpdateListRequest;
+use NetSuite\Classes\UpdateListResponse;
+use NetSuite\Classes\WriteResponse;
+use NetSuite\Classes\WriteResponseList;
 use NetSuite\NetSuiteService;
 
 /**
@@ -324,18 +330,35 @@ class NetSuiteApi extends CrmApi {
      * @throws NetSuiteApiException
      */
     private function handleSearchResponse(SearchResponse $response, $object) {
-        if (!$response->searchResult->status->isSuccess) {
-            // @todo get error message from response
-            throw new NetSuiteApiException('NetSuite search error');
-        }
-
         /** @var SearchResult $result */
         $result = $response->searchResult;
+
+        /** @var Status $status */
+        $status = $result->status;
+
+        if (!$status->isSuccess) {
+            throw new NetSuiteApiException($this->getErrorMessage($status));
+        }
 
         /** @var RecordList $records */
         $records = $result->recordList;
 
         return $this->mapRecordValues($records->record, $object);
+    }
+
+    private function getErrorMessage(Status $status) {
+        /** @var StatusDetail[] $details */
+        $details = $status->statusDetail;
+
+        $message = 'NetSuite API error';
+        foreach ($details as $detail) {
+            if ($detail->type === StatusDetailType::ERROR) {
+                $message .= ': ' . $detail->code . ' - ' . $detail->message;
+                break;
+            }
+        }
+
+        return $message;
     }
 
     /**
@@ -468,7 +491,8 @@ class NetSuiteApi extends CrmApi {
                 ? new Customer()
                 : new Contact();
             $updateId = $update ? $id : null;
-            $this->populateRecord($record, $lead, $object, $updateId);
+            $mauticId = $update ? null : $id;
+            $this->populateRecord($record, $lead, $object, $updateId, $mauticId);
             $records[] = $record;
             $returnIds[$id] = true;
         }
@@ -478,16 +502,32 @@ class NetSuiteApi extends CrmApi {
             : new AddListRequest();
         $request->record = $records;
 
+        /** @var UpdateListResponse|AddListResponse $response */
         $response = $update
             ? $service->updateList($request)
             : $service->addList($request);
 
-        if (!$response->searchResult->status->isSuccess) {
-            // @todo Include message from response.
-            throw new NetSuiteApiException('Failed to add/update company records.');
+        /** @var WriteResponseList $responseList */
+        $responseList = $response->writeResponseList;
+        /** @var Status $status */
+        $status = $responseList->status;
+
+        if (!$status->isSuccess) {
+            throw new NetSuiteApiException($this->getErrorMessage($status));
         }
 
-        // @todo set $returnIds to map NetSuite internal ID to Mautic ID
+        if (!$update) {
+            /** @var WriteResponse[] $writeResponses */
+            $writeResponses = $responseList->writeResponse;
+
+            $returnIds = [];
+
+            foreach ($writeResponses as $writeResponse) {
+                /** @var RecordRef $baseRef */
+                $baseRef = $writeResponse->baseRef;
+                $returnIds[$baseRef->internalId] = $baseRef->externalId;
+            }
+        }
 
         return $returnIds;
     }
@@ -509,12 +549,17 @@ class NetSuiteApi extends CrmApi {
      * @param array $values
      * @param string $object
      * @param string|null $updateId
+     * @param string|null $mauticId
      *
      * @throws NetSuiteApiException
      */
-    public function populateRecord($record, $values, $object, $updateId = null) {
+    public function populateRecord($record, $values, $object, $updateId = null, $mauticId = null) {
         if ($updateId) {
             $record->internalId = $updateId;
+        }
+
+        if ($mauticId) {
+            $record->externalId = $mauticId;
         }
 
         $fields = $this->getFields($object);
@@ -545,9 +590,9 @@ class NetSuiteApi extends CrmApi {
      */
     private function preprocessValueForNetSuite($value, $field) {
         if ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATETIME) {
-            // @todo set date format
+            $value = $this->formatNetSuiteDate($value);
         } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
-            // @todo set date format
+            $value = $this->formatNetSuiteDate($value, false);
         }
 
         return $value;
@@ -580,12 +625,22 @@ class NetSuiteApi extends CrmApi {
             $ref = new StringCustomFieldRef();
         }
 
-        if (!is_null($ref)) {
+        if ($ref !== null) {
             $ref->scriptId = $key;
             $ref->value = $value;
             $customFieldList->customField[] = $ref;
         }
 
         $record->customFieldList = $customFieldList;
+    }
+
+    public function formatNetSuiteDate($date, $includeTime = true) {
+        $date = new \DateTime($date);
+        $format = 'Y-m-d';
+        if ($includeTime) {
+            $format .= '\TH:i:s.000-00:00';
+        }
+
+        return $date->format($format);
     }
 }

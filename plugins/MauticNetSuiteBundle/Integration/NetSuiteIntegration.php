@@ -2,6 +2,7 @@
 
 namespace MauticPlugin\MauticNetSuiteBundle\Integration;
 
+use Mautic\CoreBundle\Helper\InputHelper;
 use Mautic\LeadBundle\Helper\IdentifyCompanyHelper;
 use Mautic\PluginBundle\Entity\IntegrationEntity;
 use Mautic\PluginBundle\Entity\IntegrationEntityRepository;
@@ -48,7 +49,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
      */
     public function getSupportedFeatures()
     {
-        return ['get_leads', 'push_leads', 'push_lead'];
+        return ['get_leads', 'push_leads']; // @todo add 'push_lead'
     }
 
     /**
@@ -243,16 +244,26 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return $this->pushRecords($params, 'company');
     }
 
+    public function getFetchQuery($config)
+    {
+        return $config;
+    }
+
     private function getRecords($params = [], $query = null, &$executed = null, $result = [], $object = 'contacts') {
-        if ($object === 'Contact') {
+        if (strtolower($object) === 'contact') {
             $object = 'contacts';
         }
 
-        $executed = 0;
-        $maxRecords = 200;
+        if (!$query) {
+            $query = $this->getFetchQuery($params);
+        }
+
+        if (!is_array($executed)) {
+            $executed = [0 => 0, 1 => 0];
+        }
 
         try {
-            if (!$this->isAuthorized()) {
+            if ($this->isAuthorized()) {
                 $progress = false;
 
                 if (isset($params['output']) && $params['output']->getVerbosity() < OutputInterface::VERBOSITY_VERBOSE) {
@@ -262,15 +273,16 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
 
                 while (true) {
                     $data = $object === 'company'
-                        ? $this->getApiHelper()->getCompanies($params)
-                        : $this->getApiHelper()->getContacts($params);
+                        ? $this->getApiHelper()->getCompanies($query)
+                        : $this->getApiHelper()->getContacts($query);
 
                     if (empty($data)) {
                         break;
                     }
 
-                    $result = $this->amendLeadDataBeforeMauticPopulate($data, $object);
-                    $executed += count($result);
+                    list($updated, $created) = $this->amendLeadDataBeforeMauticPopulate($data, $object, $params);
+                    $executed[0] += $updated;
+                    $executed[1] += $created;
 
                     if (isset($params['output'])) {
                         if ($params['output']->getVerbosity() >= OutputInterface::VERBOSITY_VERBOSE) {
@@ -298,29 +310,33 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return $executed;
     }
 
-    public function amendLeadDataBeforeMauticPopulate($data, $object)
+    public function amendLeadDataBeforeMauticPopulate($data, $object, $params = [])
     {
-        $config = $this->mergeConfigToFeatureSettings();
+        $updated = 0;
+        $created = 0;
+        $entity = null;
+        $mauticObjectReference = $object === 'company' ? 'company' : 'lead';
 
-        $result = [];
+        $config = $this->mergeConfigToFeatureSettings();
 
         if (!in_array($object, ['company', 'contacts'])) {
             throw new NetSuiteApiException('Unsupported object type.');
         }
 
         if (!empty($data)) {
-            $this->em->getConnection()->getConfiguration()->setSQLLogger(null);
             $entity = null;
             /** @var IntegrationEntityRepository $integrationEntityRepo */
             $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
-            $objects = $data;
             $integrationEntities = [];
 
-            foreach ($objects as $entityData) {
+            foreach ($data as $entityData) {
+                if (!empty($entityData['email'])) {
+                    $entityData['email'] = InputHelper::email($entityData['email']);
+                }
+
                 $isModified = false;
                 $recordId = $entityData['netsuite_id'];
-                $internalEntity = $object === 'company' ? 'company' : 'lead';
-                $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $internalEntity, null, null, null, false, 0, 0, "'$recordId'");
+                $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, null, null, null, false, 0, 0, "'$recordId'");
 
                 if (count($integrationId)) {
                     $model = $object === 'company' ? $this->companyModel : $this->leadModel;
@@ -363,13 +379,8 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                         : $this->getMauticLead($entityData);
                 }
 
-                if ($entity) {
-                    $result[] = $object === 'company'
-                        ? $entity->getName()
-                        : $entity->getEmail();
-                }
-
                 if ($object !== 'company' && !empty($entityData['company']) && $entityData['company'] !== $this->translator->trans('mautic.integration.form.lead.unknown')) {
+                    // @todo verify functionality of company identification
                     $company = IdentifyCompanyHelper::identifyLeadsCompany(
                         ['company' => $entityData['company']],
                         null,
@@ -382,9 +393,13 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                     }
                 }
 
-                $mauticObjectReference = $object;
-
                 if ($entity) {
+                    if (method_exists($entity, 'isNewlyCreated') && $entity->isNewlyCreated()) {
+                        ++$created;
+                    } else {
+                        ++$updated;
+                    }
+
                     $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, $entity->getId());
 
                     if (count($integrationId) === 0) {
@@ -397,13 +412,11 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                             ->setInternalEntity($mauticObjectReference)
                             ->setInternalEntityId($entity->getId());
                         $integrationEntities[] = $integrationEntity;
-                    } else {
+                    } elseif ($isModified) {
                         /** @var IntegrationEntity $integrationEntity */
                         $integrationEntity = $integrationEntityRepo->getEntity($integrationId[0]['id']);
-                        if ($isModified) {
-                            $integrationEntity->setLastSyncDate(new \DateTime());
-                            $integrationEntities[] = $integrationEntity;
-                        }
+                        $integrationEntity->setLastSyncDate(new \DateTime());
+                        $integrationEntities[] = $integrationEntity;
                     }
 
                     $this->em->detach($entity);
@@ -416,7 +429,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             $this->em->clear();
         }
 
-        return $result;
+        return [$updated, $created];
     }
 
     private function pushRecords($params = [], $object = 'contacts') {
@@ -427,6 +440,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             $params['end'] = null;
         }
 
+        list($fromDate, $toDate) = $this->getSyncTimeframeDates($params);
         $config = $this->mergeConfigToFeatureSettings();
         $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
         $fieldsToUpdateInCrm = isset($config['update_mautic']) ? array_keys($config['update_mautic'], 0) : [];
@@ -451,38 +465,34 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
 
         $internalEntity = $object === 'company' ? 'company' : 'lead';
 
-        $totalToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, false, $params['start'], $params['end'], [$object]);
+        $totalToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, false, $fromDate, $toDate, [$object]);
         if (is_array($totalToUpdate)) {
             $totalToUpdate = array_sum($totalToUpdate);
         }
 
-        $totalToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, false, $params['start'], $params['end'], $internalEntity);
+        $totalToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, false, $fromDate, $toDate, $internalEntity);
         if (is_array($totalToCreate)) {
             $totalToCreate = array_sum($totalToCreate);
         }
 
         $totalCount = $totalToCreate + $totalToUpdate;
 
-        if (defined('IN_MAUTIC_CONSOLE')) {
-            if ($totalToUpdate + $totalToCreate) {
-                $output = new ConsoleOutput();
-                $output->writeln("About $totalToUpdate to update and about $totalToCreate to create/update");
-                $progress = new ProgressBar($output, $totalCount);
-            }
+        if (defined('IN_MAUTIC_CONSOLE') && $totalToUpdate + $totalToCreate) {
+            $output = new ConsoleOutput();
+            $output->writeln("About $totalToUpdate to update and about $totalToCreate to create/update");
+            $progress = new ProgressBar($output, $totalCount);
         }
 
         $leadsToCreateInNs = [];
         $leadsToUpdateInNs = [];
         $integrationEntities = [];
-
         $fieldToCheck = $object === 'company' ? 'companyName' : 'email';
+        $leadsToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, $totalToUpdate, $fromDate, $toDate, $object, [])[$object];
 
-        $toUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, $totalToUpdate, $params['start'], $params['end'], $object, [])[$object];
+        if (is_array($leadsToUpdate)) {
+            $totalUpdated += count($leadsToUpdate);
 
-        if (is_array($toUpdate)) {
-            $totalUpdated += count($toUpdate);
-
-            foreach ($toUpdate as $lead) {
+            foreach ($leadsToUpdate as $lead) {
                 if (!empty($lead[$fieldToCheck])) {
                     $key = mb_strtolower($this->cleanPushData($lead[$fieldToCheck]));
                     $lead = $this->getCompoundMauticFields($lead);
@@ -494,9 +504,9 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                 }
             }
         }
-        unset($toUpdate);
+        unset($leadsToUpdate);
 
-        $leadsToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, $totalToCreate, $params['start'], $params['end'], $internalEntity);
+        $leadsToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, $totalToCreate, $fromDate, $toDate, $internalEntity);
 
         if (is_array($leadsToCreate)) {
             $totalCreated += count($leadsToCreate);
@@ -520,7 +530,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         $leadData = [];
         $rowNum = 0;
 
-        foreach ($leadsToUpdateInNs as $lead) {
+        foreach ($leadsToUpdateInNs as $key => $lead) {
             if (defined('IN_MAUTIC_CONSOLE') && $progress) {
                 $progress->advance();
             }
@@ -541,7 +551,6 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         }
 
         $this->getApiHelper()->updateLeads($leadData, $object);
-
         $leadData = [];
         $rowNum = 0;
 
