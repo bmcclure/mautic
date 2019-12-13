@@ -335,7 +335,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                 }
 
                 $isModified = false;
-                $recordId = $entityData['netsuite_id'];
+                $recordId = $entityData['netsuite_id']; // @todo Determine if there is a better way to pass the netsuite ID
                 $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, null, null, null, false, 0, 0, "'$recordId'");
 
                 if (count($integrationId)) {
