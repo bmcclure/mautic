@@ -24,6 +24,18 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return 'NetSuite';
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    public function getApiHelper()
+    {
+        if (empty($this->helper)) {
+            $this->helper = new NetSuiteApi($this);
+        }
+
+        return $this->helper;
+    }
+
     public function getRequiredKeyFields()
     {
         return [
@@ -250,7 +262,9 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     }
 
     private function getRecords($params = [], $query = null, &$executed = null, $result = [], $object = 'contacts') {
-        if (strtolower($object) === 'contact') {
+        $object = strtolower($object);
+
+        if ($object === 'contact') {
             $object = 'contacts';
         }
 
@@ -320,6 +334,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         $config = $this->mergeConfigToFeatureSettings();
 
         if (!in_array($object, ['company', 'contacts'])) {
+            $test = 'here';
             throw new NetSuiteApiException('Unsupported object type.');
         }
 
@@ -433,6 +448,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     }
 
     private function pushRecords($params = [], $object = 'contacts') {
+        $object = strtolower($object);
         $maxRecords = (isset($params['limit']) && $params['limit'] < 100) ? $params['limit'] : 100;
 
         if (isset($params['fetchAll']) && $params['fetchAll']) {
