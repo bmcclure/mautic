@@ -31,6 +31,8 @@ use NetSuite\Classes\RecordList;
 use NetSuite\Classes\RecordRef;
 use NetSuite\Classes\SearchDateField;
 use NetSuite\Classes\SearchDateFieldOperator;
+use NetSuite\Classes\SearchMoreWithIdRequest;
+use NetSuite\Classes\SearchMoreWithIdResponse;
 use NetSuite\Classes\SearchRecordBasic;
 use NetSuite\Classes\SearchRequest;
 use NetSuite\Classes\SearchResponse;
@@ -250,7 +252,7 @@ class NetSuiteApi extends CrmApi {
         } elseif ($recordType === 'contact') {
             $fields = [
                 'comments' => $this->fieldDefinition('comments', 'Comments'),
-                'company' => $this->fieldDefinition('company', 'Company', true),
+                //'company' => $this->fieldDefinition('company', 'Company', true),
                 'contactSource' => $this->fieldDefinition('contactSource', 'Contact Source'),
                 'dateCreated' => $this->fieldDefinition('dateCreated', 'Date Created', false, NetSuiteIntegration::FIELD_TYPE_DATETIME),
                 'email' => $this->fieldDefinition('email', 'Email', true),
@@ -289,50 +291,89 @@ class NetSuiteApi extends CrmApi {
 
     /**
      * @param array $query
+     * @param int $page
+     * @param bool $more
+     * @param null $searchId
+     * @param int $total
      *
      * @return array
      *
      * @throws NetSuiteApiException
      */
-    public function getContacts($query) {
-        $service = $this->getNetSuiteService();
-        $service->setSearchPreferences(false, $query['limit']);
+    public function getContacts($query, $page = 1, &$more = false, &$searchId = null, &$total = 0) {
         $search = new ContactSearchBasic();
-        $response = $service->search($this->setupSearchRequest($search, $query));
-        return $this->handleSearchResponse($response, 'contacts');
+        $response = $this->handleSearchRequest($search, $query, $page, $searchId);
+        $data = $this->handleSearchResponse($response, 'contacts', $more, $searchId, $total);
+        if (count($data) > $query['limit']) {
+            $data = array_slice($data, 0, $query['limit']);
+        }
+        return $data;
     }
 
     /**
      * @param array $query
+     * @param int $page
+     * @param bool $more
+     * @param null $searchId
+     * @param int $total
      *
      * @return array
      *
      * @throws NetSuiteApiException
      */
-    public function getCompanies($query) {
-        $service = $this->getNetSuiteService();
-        $service->setSearchPreferences(false, 200);
+    public function getCompanies($query, $page = 1, &$more = false, &$searchId = null, &$total = 0) {
         $search = new CustomerSearchBasic();
-        $response = $service->search($this->setupSearchRequest($search, $query));
-        return $this->handleSearchResponse($response, 'company');
+        $response = $this->handleSearchRequest($search, $query, $page, $searchId);
+        $data = $this->handleSearchResponse($response, 'company', $more, $searchId, $total);
+        if (count($data) > $query['limit']) {
+            $data = array_slice($data, 0, $query['limit']);
+        }
+        return $data;
     }
 
     /**
      * @param SearchRecordBasic $search
      * @param array $query
+     * @param int $page
+     * @param null $searchId
      *
-     * @return SearchRequest
+     * @return SearchMoreWithIdResponse|SearchResponse
      *
      * @throws \Exception
      */
-    public function setupSearchRequest(SearchRecordBasic $search, array $query) {
-        if (empty($query['fetchAll']) && (!empty($query['start']) || !empty($query['end']))) {
-            $search->lastModifiedDate = $this->getSearchDateField($query);
+    public function handleSearchRequest(SearchRecordBasic $search, array $query, $page = 1, $searchId = null) {
+        $service = $this->getNetSuiteService();
+
+        $limit = $query['limit'];
+        $pageSize = 100;
+        if ($limit == 1) {
+            $pageSize = 1;
+        } elseif ($limit <= 50) {
+            $pageSize = 50;
+        } elseif ($limit <= 100) {
+            $pageSize = 100;
+        } elseif  ($limit <= 1000) {
+            $pageSize = 1000;
         }
 
-        $request = new SearchRequest();
-        $request->searchRecord = $search;
-        return $request;
+        $service->setSearchPreferences(false, $pageSize);
+
+        if ($page === 1) {
+            if (empty($query['fetchAll']) && (!empty($query['start']) || !empty($query['end']))) {
+                $search->lastModifiedDate = $this->getSearchDateField($query);
+            }
+
+            $request = new SearchRequest();
+            $request->searchRecord = $search;
+        } else {
+            $request = new SearchMoreWithIdRequest();
+            $request->searchId = $searchId;
+            $request->pageIndex = $page;
+        }
+
+        return $page === 1
+            ? $service->search($request)
+            : $service->searchMoreWithId($request);
     }
 
     /**
@@ -365,16 +406,23 @@ class NetSuiteApi extends CrmApi {
     }
 
     /**
-     * @param SearchResponse $response
+     * @param SearchResponse|SearchMoreWithIdResponse $response
      * @param string $object
+     * @param bool $more
+     * @param null|string $searchId
+     * @param null $total
      *
      * @return array
      *
      * @throws NetSuiteApiException
      */
-    private function handleSearchResponse(SearchResponse $response, $object) {
+    private function handleSearchResponse($response, $object, &$more = false, &$searchId = null, &$total = null) {
         /** @var SearchResult $result */
         $result = $response->searchResult;
+
+        $more = ($result->pageIndex < $result->totalPages);
+        $searchId = $result->searchId;
+        $total = $result->totalRecords;
 
         /** @var Status $status */
         $status = $result->status;
@@ -412,7 +460,9 @@ class NetSuiteApi extends CrmApi {
      * @return array
      */
     private function mapRecordValues(array $records, $object) {
-        $fields = $this->integration->getAvailableLeadFields()[$object];
+        $settings = [];
+        $settings['feature_settings']['objects'] = [$object];
+        $fields = $this->integration->getAvailableLeadFields($settings)[$object];
 
         $items = [];
 
@@ -421,18 +471,18 @@ class NetSuiteApi extends CrmApi {
             /** @var CustomFieldList $customFieldList */
             $customFieldList = $record->customFieldList;
 
-            $contact = [
+            $values = [
                 'netsuite_id' => $record->internalId,
             ];
 
             foreach (array_keys($fields) as $field) {
                 if (property_exists($record, $field)) {
-                    $contact[$field] = $record->{$field};
+                    $values[$field] = $record->{$field};
                 } else {
                     /** @var CustomFieldRef $customField */
                     foreach ($customFieldList->customField as $customField) {
                         if ($field === $customField->scriptId) {
-                            $contact[$field] = property_exists($customField, 'value')
+                            $values[$field] = property_exists($customField, 'value')
                                 ? $customField->value
                                 : '';
                             break;
@@ -441,8 +491,16 @@ class NetSuiteApi extends CrmApi {
                 }
 
             }
-            if (!empty($contact)) {
-                $items[] = $contact;
+
+            if ($object === 'contacts' && !empty($record->company)) {
+                /** @var RecordRef $companyRef */
+                $companyRef = $record->company;
+                $values['companyId'] = $companyRef->internalId;
+                $values['company'] = $companyRef->name;
+            }
+
+            if (!empty($values)) {
+                $items[] = $values;
             }
         }
 

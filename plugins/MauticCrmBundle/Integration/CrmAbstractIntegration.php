@@ -399,6 +399,9 @@ abstract class CrmAbstractIntegration extends AbstractIntegration
                 $uniqueLeadFieldData[$leadField] = $value;
             }
             if (isset($leadFieldTypes[$leadField]['type']) && $leadFieldTypes[$leadField]['type'] == 'text') {
+                if (is_object($value)) {
+                    $test = 'here';
+                }
                 $matchedFields[$leadField] = substr($value, 0, 255);
             }
         }

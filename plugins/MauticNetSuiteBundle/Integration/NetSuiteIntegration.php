@@ -261,6 +261,14 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return $config;
     }
 
+    /**
+     * @param array $params
+     * @param null|array $query
+     * @param null|array $executed
+     * @param array $result
+     * @param string $object
+     * @return array|null
+     */
     private function getRecords($params = [], $query = null, &$executed = null, $result = [], $object = 'contacts') {
         $object = strtolower($object);
 
@@ -279,16 +287,25 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         try {
             if ($this->isAuthorized()) {
                 $progress = false;
+                $more = true;
+                $searchId = null;
+                $page = 1;
+                $limit = $params['limit'] ? (int) $params['limit'] : 0;
+                $total = $limit;
+                $processed = 0;
+                while ($more) {
+                    $query['limit'] = ($limit && $processed + 100 > $limit) ? $limit - $processed : 100;
 
-                if (isset($params['output']) && $params['output']->getVerbosity() < OutputInterface::VERBOSITY_VERBOSE) {
-                    $progress = new ProgressBar($params['output']);
-                    $progress->start();
-                }
-
-                while (true) {
                     $data = $object === 'company'
-                        ? $this->getApiHelper()->getCompanies($query)
-                        : $this->getApiHelper()->getContacts($query);
+                        ? $this->getApiHelper()->getCompanies($query, $page, $more, $searchId, $total)
+                        : $this->getApiHelper()->getContacts($query, $page, $more, $searchId, $total);
+
+                    if (!$progress) {
+                        $progressTotal = ($limit && $total > $limit) ? $limit : $total;
+                        $progress = new ProgressBar($params['output'], $progressTotal);
+                        $progress->start();
+                        $params['progress'] = $progress;
+                    }
 
                     if (empty($data)) {
                         break;
@@ -298,17 +315,10 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                     $executed[0] += $updated;
                     $executed[1] += $created;
 
-                    if (isset($params['output'])) {
-                        if ($params['output']->getVerbosity() >= OutputInterface::VERBOSITY_VERBOSE) {
-                            $params['output']->writeln($result);
-                        } else {
-                            $progress->advance();
-                        }
-                    }
+                    ++$page;
+                    $processed  += count($data);
 
-                    $more = false;
-
-                    if (!$more) {
+                    if ($limit > 0 && $processed >= $limit) {
                         break;
                     }
                 }
@@ -334,7 +344,6 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         $config = $this->mergeConfigToFeatureSettings();
 
         if (!in_array($object, ['company', 'contacts'])) {
-            $test = 'here';
             throw new NetSuiteApiException('Unsupported object type.');
         }
 
@@ -345,13 +354,23 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             $integrationEntities = [];
 
             foreach ($data as $entityData) {
+                if (isset($params['progress'])) {
+                    $params['progress']->advance();
+                }
+
                 if (!empty($entityData['email'])) {
                     $entityData['email'] = InputHelper::email($entityData['email']);
                 }
 
+                if (!empty($entityData['dateCreated'])) {
+                    $date = new \DateTime($entityData['dateCreated']);
+                    $entityData['dateCreated'] = $date->format('Y-m-d H:i:s');
+                    // @todo determine timezone consistency
+                }
+
                 $isModified = false;
                 $recordId = $entityData['netsuite_id']; // @todo Determine if there is a better way to pass the netsuite ID
-                $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, null, null, null, false, 0, 0, "'$recordId'");
+                $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, null, null, null, false, 0, 0, $recordId);
 
                 if (count($integrationId)) {
                     $model = $object === 'company' ? $this->companyModel : $this->leadModel;
@@ -394,21 +413,20 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                         : $this->getMauticLead($entityData);
                 }
 
-                if ($object !== 'company' && !empty($entityData['company']) && $entityData['company'] !== $this->translator->trans('mautic.integration.form.lead.unknown')) {
-                    // @todo verify functionality of company identification
-                    $company = IdentifyCompanyHelper::identifyLeadsCompany(
-                        ['company' => $entityData['company']],
-                        null,
-                        $this->companyModel
-                    );
-
-                    if (!empty($company[2])) {
-                        $this->companyModel->addLeadToCompany($company[2], $entity);
-                        $this->em->detach($company[2]);
-                    }
-                }
-
                 if ($entity) {
+                    if ($object !== 'company' && !empty($entityData['company'])) {
+                        $company = IdentifyCompanyHelper::identifyLeadsCompany(
+                            ['company' => $entityData['company']],
+                            null,
+                            $this->companyModel
+                        );
+
+                        if (!empty($company[2])) {
+                            $this->companyModel->addLeadToCompany($company[2], $entity);
+                            $this->em->detach($company[2]);
+                        }
+                    }
+
                     if (method_exists($entity, 'isNewlyCreated') && $entity->isNewlyCreated()) {
                         ++$created;
                     } else {
@@ -470,7 +488,14 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             return [0, 0, 0];
         }
 
-        $fields = implode(', l.', $leadFields);
+        $queryFields = $leadFields;
+        foreach ($queryFields as $index => $queryField) {
+            if ($queryField === 'mauticContactIsContactableByEmail') {
+                unset($queryFields[$index]);
+            }
+        }
+
+        $fields = implode(', l.', $queryFields);
         $fields = 'l.' . $fields;
 
         $availableFields = $this->getAvailableLeadFields(['feature_settings' => ['objects' => [$object]]]);
