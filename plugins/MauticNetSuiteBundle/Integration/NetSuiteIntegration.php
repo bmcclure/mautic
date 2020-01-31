@@ -278,6 +278,8 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             $object = 'contacts';
         }
 
+        $this->normalizeParams($params);
+
         if (!$query) {
             $query = $this->getFetchQuery($params);
         }
@@ -365,13 +367,11 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                 }
 
                 if (!empty($entityData['dateCreated'])) {
-                    $date = new \DateTime($entityData['dateCreated']);
-                    $entityData['dateCreated'] = $date->format('Y-m-d H:i:s');
-                    // @todo determine timezone consistency
+                    $entityData['dateCreated'] = $this->formatDateForMautic($entityData['dateCreated']);
                 }
 
                 $isModified = false;
-                $recordId = $entityData['netsuite_id']; // @todo Determine if there is a better way to pass the netsuite ID
+                $recordId = $entityData['netsuite_id'];
                 $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), $object, $mauticObjectReference, null, null, null, false, 0, 0, $recordId);
 
                 if (count($integrationId)) {
@@ -465,6 +465,13 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         }
 
         return [$updated, $created];
+    }
+
+    private function formatDateForMautic($dateString) {
+        // @todo determine timezone consistency
+        $date = new \DateTime($dateString);
+        $date->setTimezone(new \DateTimeZone(date_default_timezone_get()));
+        return $date->format('Y-m-d H:i:s');
     }
 
     private function normalizeParams(array &$params) {

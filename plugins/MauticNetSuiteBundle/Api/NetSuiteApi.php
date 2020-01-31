@@ -57,6 +57,8 @@ use NetSuite\NetSuiteService;
  * @package MauticPlugin\MauticNetSuiteBundle\Api
  */
 class NetSuiteApi extends CrmApi {
+    public static $TIMEZONE = '-0700';
+
     private $apiFields = [];
 
     /** @var NetSuiteService */
@@ -389,20 +391,30 @@ class NetSuiteApi extends CrmApi {
     private function getSearchDateField($query) {
         $searchDate = new SearchDateField();
 
-        if (!empty($query['start']) && !empty($query['end'])) {
+        $format = 'Y-m-d\TH:i:sP';
+        $start = null;
+        $end = null;
+        if (!empty($query['start'])) {
             $start = new \DateTime($query['start']);
+            $start->setTimezone(new \DateTimeZone(self::$TIMEZONE));
+            $start = $start->format($format);
+        }
+        if (!empty($query['end'])) {
             $end = new \DateTime($query['end']);
+            $end->setTimezone(new \DateTimeZone(self::$TIMEZONE));
+            $end = $end->format($format);
+        }
+
+        if (!empty($start) && !empty($end)) {
             $searchDate->operator = SearchDateFieldOperator::within;
-            $searchDate->searchValue = $start->format('Y-m-d\TH:i:s.000-07:00');
-            $searchDate->searchValue2 = $end->format('Y-m-d\TH:i:s.000-07:00');
-        } elseif (!empty($query['start'])) {
-            $start = new \DateTime($query['start']);
+            $searchDate->searchValue = $start;
+            $searchDate->searchValue2 = $end;
+        } elseif (!empty($start)) {
             $searchDate->operator = SearchDateFieldOperator::onOrAfter;
-            $searchDate->searchValue = $start->format('Y-m-d\TH:i:s.000-07:00');
-        } elseif (!empty($query['end'])) {
-            $end = new \DateTime($query['end']);
+            $searchDate->searchValue = $start;
+        } elseif (!empty($end)) {
             $searchDate->operator = SearchDateFieldOperator::onOrBefore;
-            $searchDate->searchValue = $end->format('Y-m-d\TH:i:s.000-07:00');
+            $searchDate->searchValue = $end;
         }
 
         return $searchDate;
@@ -847,9 +859,11 @@ class NetSuiteApi extends CrmApi {
 
     public function formatNetSuiteDate($date, $includeTime = true) {
         $date = new \DateTime($date);
+        $date->setTimezone(new \DateTimeZone(self::$TIMEZONE));
+
         $format = 'Y-m-d';
         if ($includeTime) {
-            $format .= '\TH:i:s.000-00:00';
+            $format .= '\TH:i:sP';
         }
 
         return $date->format($format);
