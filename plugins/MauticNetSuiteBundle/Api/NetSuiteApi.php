@@ -24,6 +24,8 @@ use NetSuite\Classes\GetCustomizationIdRequest;
 use NetSuite\Classes\GetCustomizationIdResult;
 use NetSuite\Classes\GetCustomizationType;
 use NetSuite\Classes\GetListRequest;
+use NetSuite\Classes\GetRequest;
+use NetSuite\Classes\GetResponse;
 use NetSuite\Classes\LongCustomFieldRef;
 use NetSuite\Classes\ReadResponse;
 use NetSuite\Classes\ReadResponseList;
@@ -59,6 +61,10 @@ class NetSuiteApi extends CrmApi {
 
     /** @var NetSuiteService */
     private $netSuiteService;
+
+    private $queryCache = [];
+
+    private $recordCache = [];
 
     /**
      * @return array
@@ -248,6 +254,7 @@ class NetSuiteApi extends CrmApi {
                 'title' => $this->fieldDefinition('title', 'Title'),
                 'url' => $this->fieldDefinition('url', 'URL'),
                 'visits' => $this->fieldDefinition('visits', 'Visits', false, NetSuiteIntegration::FIELD_TYPE_NUMBER),
+                'entityStatus' => $this->fieldDefinition('entityStatus', 'Status', false, NetSuiteIntegration::FIELD_TYPE_STRING),
             ];
         } elseif ($recordType === 'contact') {
             $fields = [
@@ -346,13 +353,9 @@ class NetSuiteApi extends CrmApi {
 
         $limit = $query['limit'];
         $pageSize = 100;
-        if ($limit == 1) {
-            $pageSize = 1;
-        } elseif ($limit <= 50) {
-            $pageSize = 50;
-        } elseif ($limit <= 100) {
-            $pageSize = 100;
-        } elseif  ($limit <= 1000) {
+        if ($limit < 5) {
+            $pageSize = 5;
+        } elseif ($limit > 1000) {
             $pageSize = 1000;
         }
 
@@ -477,7 +480,14 @@ class NetSuiteApi extends CrmApi {
 
             foreach (array_keys($fields) as $field) {
                 if (property_exists($record, $field)) {
-                    $values[$field] = $record->{$field};
+                    $value = $record->{$field};
+
+                    if ($value instanceof RecordRef) {
+                        $values[$field] = $value->internalId;
+                    } else {
+                        $values[$field] = $value;
+                    }
+
                 } else {
                     /** @var CustomFieldRef $customField */
                     foreach ($customFieldList->customField as $customField) {
@@ -495,8 +505,12 @@ class NetSuiteApi extends CrmApi {
             if ($object === 'contacts' && !empty($record->company)) {
                 /** @var RecordRef $companyRef */
                 $companyRef = $record->company;
-                $values['companyId'] = $companyRef->internalId;
-                $values['company'] = $companyRef->name;
+                $company = $this->getCompany($companyRef->internalId);
+
+                if ($company) {
+                    $values['companyId'] = $company->internalId;
+                    $values['company'] = $company->companyName;
+                }
             }
 
             if (!empty($values)) {
@@ -518,6 +532,43 @@ class NetSuiteApi extends CrmApi {
     }
 
     /**
+     * @param $internalId
+     * @return Customer|null
+     */
+    public function getCompany($internalId) {
+        if (!isset($this->recordCache['customer'][$internalId])) {
+            $service = $this->getNetSuiteService();
+
+            $ref = new RecordRef();
+            $ref->type = 'customer';
+            $ref->internalId = $internalId;
+
+            $request = new GetRequest();
+            $request->baseRef = $ref;
+
+            /** @var GetResponse $response */
+            $response = $service->get($request);
+
+            /** @var ReadResponse $readResponse */
+            $readResponse = $response->readResponse;
+
+            /** @var Status $status */
+            $status = $readResponse->status;
+
+            $company = null;
+
+            if ($status->isSuccess) {
+                $company = $readResponse->record;
+            }
+
+            $this->recordCache['customer'][$internalId] = $company;
+        }
+
+
+        return $this->recordCache['customer'][$internalId];
+    }
+
+    /**
      * @param string $field
      * @param string $value
      *
@@ -535,41 +586,45 @@ class NetSuiteApi extends CrmApi {
      * @return array
      */
     public function getObjectBy($field, $value, $object) {
-        $service = $this->getNetSuiteService();
-        $service->setSearchPreferences(false, 1);
+        if (!isset($this->queryCache[$object][$field][$value])) {
+            $service = $this->getNetSuiteService();
+            $service->setSearchPreferences(false, 5);
 
-        $searchField = new SearchStringField();
-        $searchField->operator = SearchStringFieldOperator::is;
-        $searchField->searchValue = $value;
+            $searchField = new SearchStringField();
+            $searchField->operator = SearchStringFieldOperator::is;
+            $searchField->searchValue = $value;
 
-        $search = $object === 'company'
-            ? new CustomerSearchBasic()
-            : new ContactSearchBasic();
-        $search->{$field} = $searchField;
+            $search = $object === 'company'
+                ? new CustomerSearchBasic()
+                : new ContactSearchBasic();
+            $search->{$field} = $searchField;
 
-        $request = new SearchRequest();
-        $request->searchRecord = $search;
+            $request = new SearchRequest();
+            $request->searchRecord = $search;
 
-        $response = $service->search($request);
+            $response = $service->search($request);
 
-        $record = [];
+            $record = [];
 
-        if ($response->searchResult->status->isSuccess) {
-            /** @var SearchResult $result */
-            $result = $response->searchResult;
+            if ($response->searchResult->status->isSuccess) {
+                /** @var SearchResult $result */
+                $result = $response->searchResult;
 
-            /** @var RecordList $recordList */
-            $recordList = $result->recordList;
+                /** @var RecordList $recordList */
+                $recordList = $result->recordList;
 
-            /** @var Customer[]|Contact[] $records */
-            $records = $recordList->record;
-            $records = [reset($records)];
+                /** @var Customer[]|Contact[] $records */
+                $records = $recordList->record;
+                $records = !empty($records) ? [reset($records)] : [];
 
-            $items = $this->mapRecordValues($records, 'company');
-            $record = reset($items);
+                $items = $this->mapRecordValues($records, 'company');
+                $record = reset($items);
+            }
+
+            $this->queryCache[$object][$field][$value] = $record;
         }
 
-        return $record;
+        return $this->queryCache[$object][$field][$value];
     }
 
     /**
@@ -584,8 +639,8 @@ class NetSuiteApi extends CrmApi {
     public function createLeads($leads, $object, $update = false) {
         $service = $this->getNetSuiteService();
 
-        $records = [];
-
+        $createRecords = [];
+        $updateRecords = [];
         $returnIds = [];
 
         foreach ($leads as $id => $lead) {
@@ -594,31 +649,65 @@ class NetSuiteApi extends CrmApi {
                 : new Contact();
             $updateId = $update ? $id : null;
             $mauticId = $update ? null : $id;
-            $this->populateRecord($record, $lead, $object, $updateId, $mauticId);
-            $records[] = $record;
-            $returnIds[$id] = true;
+
+            if (!$update) {
+                /** @var array $existingRecord */
+                $existingRecord = $object === 'company'
+                    ? $this->getCompanyBy('companyName', $lead['companyName'])
+                    : $this->getContactBy('email', $lead['email']);
+
+                if (!empty($existingRecord)) {
+                    $updateId = $existingRecord['netsuite_id'];
+                    $mauticId = null;
+                }
+            }
+
+            $updatedFields = $this->populateRecord($record, $lead, $object, $updateId, $mauticId);
+
+            if (!empty($updatedFields)) {
+                if ($updateId) {
+                    $updateRecords[] = $record;
+                } else {
+                    $createRecords[] = $record;
+                }
+
+                $returnIds[$id] = true;
+            }
         }
 
-        $request = $update
-            ? new UpdateListRequest()
-            : new AddListRequest();
-        $request->record = $records;
+        if (!empty($updateRecords)) {
+            $request = new UpdateListRequest();
+            $request->record = $updateRecords;
 
-        /** @var UpdateListResponse|AddListResponse $response */
-        $response = $update
-            ? $service->updateList($request)
-            : $service->addList($request);
+            /** @var UpdateListResponse $response */
+            $response = $service->updateList($request);
 
-        /** @var WriteResponseList $responseList */
-        $responseList = $response->writeResponseList;
-        /** @var Status $status */
-        $status = $responseList->status;
+            /** @var WriteResponseList $responseList */
+            $responseList = $response->writeResponseList;
+            /** @var Status $status */
+            $status = $responseList->status;
 
-        if (!$status->isSuccess) {
-            throw new NetSuiteApiException($this->getErrorMessage($status));
+            if (!$status->isSuccess) {
+                throw new NetSuiteApiException($this->getErrorMessage($status));
+            }
         }
 
-        if (!$update) {
+        if (!empty($createRecords)) {
+            $request = new AddListRequest();
+            $request->record = $createRecords;
+
+            /** @var AddListResponse $response */
+            $response = $service->addList($request);
+
+            /** @var WriteResponseList $responseList */
+            $responseList = $response->writeResponseList;
+            /** @var Status $status */
+            $status = $responseList->status;
+
+            if (!$status->isSuccess) {
+                throw new NetSuiteApiException($this->getErrorMessage($status));
+            }
+
             /** @var WriteResponse[] $writeResponses */
             $writeResponses = $responseList->writeResponse;
 
@@ -653,9 +742,12 @@ class NetSuiteApi extends CrmApi {
      * @param string|null $updateId
      * @param string|null $mauticId
      *
+     * @return int
      * @throws NetSuiteApiException
      */
     public function populateRecord($record, $values, $object, $updateId = null, $mauticId = null) {
+        $modifiedFields = 0;
+
         if ($updateId) {
             $record->internalId = $updateId;
         }
@@ -674,34 +766,51 @@ class NetSuiteApi extends CrmApi {
             }
 
             $field = $fields[$key];
-            $value = $this->preprocessValueForNetSuite($value, $field);
+            $value = $this->preprocessValueForNetSuite($value, $field, $object);
 
             if (array_key_exists($key, $defaultFields)) {
                 $record->{$key} = $value;
             } else {
                 $this->addCustomFieldRef($record, $key, $value, $field);
             }
+
+            ++$modifiedFields;
         }
+
+        return $modifiedFields;
     }
 
     /**
      * @param mixed $value
      * @param array $field
+     * @param string $object
      *
      * @return mixed
      */
-    private function preprocessValueForNetSuite($value, $field) {
+    private function preprocessValueForNetSuite($value, $field, $object) {
         if ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATETIME) {
             $value = $this->formatNetSuiteDate($value);
         } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
             $value = $this->formatNetSuiteDate($value, false);
         }
 
+        $recordRefs = [
+            'company' => [
+                'entityStatus' => 'customerStatus',
+            ]
+        ];
+
+        if (isset($recordRefs[$object][$field['dv']])) {
+            $recordRef = new RecordRef();
+            $recordRef->type = $recordRefs[$object][$field['dv']];
+            $recordRef->internalId = $value;
+        }
+
         return $value;
     }
 
     /**
-     * @param Customer|Contact$record
+     * @param Customer|Contact $record
      * @param string $key
      * @param mixed $value
      * @param array $field

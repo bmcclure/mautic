@@ -1,3 +1,4 @@
 # Installation
 
-Please run `composer require ryanwinchester/netsuite-php` in order to install the required library.
+1. Extract this plugin into plugins/MauticNetSuiteBundle
+2. Run `composer require ryanwinchester/netsuite-php`.

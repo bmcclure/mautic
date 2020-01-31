@@ -2,6 +2,8 @@
 
 namespace MauticPlugin\MauticNetSuiteBundle\Integration;
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'NetSuite' . DIRECTORY_SEPARATOR . 'ProgressUpdater.php';
+
 use Mautic\CoreBundle\Helper\InputHelper;
 use Mautic\LeadBundle\Helper\IdentifyCompanyHelper;
 use Mautic\PluginBundle\Entity\IntegrationEntity;
@@ -9,8 +11,8 @@ use Mautic\PluginBundle\Entity\IntegrationEntityRepository;
 use MauticPlugin\MauticCrmBundle\Integration\CrmAbstractIntegration;
 use MauticPlugin\MauticNetSuiteBundle\Api\NetSuiteApi;
 use MauticPlugin\MauticNetSuiteBundle\Api\NetSuiteApiException;
+use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\ProgressUpdater;
 use Symfony\Component\Console\Helper\ProgressBar;
-use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
 
@@ -465,74 +467,127 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return [$updated, $created];
     }
 
-    private function pushRecords($params = [], $object = 'contacts') {
-        $object = strtolower($object);
-        $maxRecords = (isset($params['limit']) && $params['limit'] < 100) ? $params['limit'] : 100;
-
+    private function normalizeParams(array &$params) {
         if (isset($params['fetchAll']) && $params['fetchAll']) {
             $params['start'] = null;
             $params['end'] = null;
         }
+    }
 
+    private function pushRecords($params = [], $object = 'contacts') {
+        $object = strtolower($object);
+        $this->normalizeParams($params);
+        $maxRecords = (isset($params['limit']) && $params['limit'] < 100) ? $params['limit'] : 100;
         list($fromDate, $toDate) = $this->getSyncTimeframeDates($params);
+
         $config = $this->mergeConfigToFeatureSettings();
-        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
-        $fieldsToUpdateInCrm = isset($config['update_mautic']) ? array_keys($config['update_mautic'], 0) : [];
         $recordFields = $object === 'company' ? 'companyFields' : 'leadFields';
         $leadFields = array_unique(array_values($config[$recordFields]));
+
         $totalUpdated = 0;
         $totalCreated = 0;
         $totalErrors = 0;
 
         if (empty($leadFields)) {
-            return [0, 0, 0];
+            return [$totalUpdated, $totalCreated, $totalErrors];
         }
 
-        $queryFields = $leadFields;
-        foreach ($queryFields as $index => $queryField) {
-            if ($queryField === 'mauticContactIsContactableByEmail') {
-                unset($queryFields[$index]);
+        $availableFields = $this->getAvailableLeadFields(['feature_settings' => ['objects' => [$object]]])[$object];
+        $fields = $this->getFields($leadFields);
+
+        list($totalToUpdate, $totalToCreate, $totalCount) = $this->getTotalCounts($object, $fields, $fromDate, $toDate, $maxRecords);
+
+        $progress = new ProgressUpdater($totalCount, "About $totalToUpdate to update and about $totalToCreate to create/update");
+        $totalUpdated += $this->updateLeads($object, $fields, $totalToUpdate, $fromDate, $toDate, $availableFields, $config, $maxRecords, $progress);
+        $totalCreated += $this->createLeads($object, $fields, $totalToCreate, $fromDate, $toDate, $availableFields, $config, $maxRecords, $progress);
+        $progress->finish();
+
+        return [$totalUpdated, $totalCreated, $totalErrors];
+    }
+
+    private function updateLeads($object, $fields, $totalToUpdate, $fromDate, $toDate, $availableFields, $config, $maxRecords, ProgressUpdater $progress) {
+        $leadData = [];
+        $rowNum = 0;
+        $integrationEntities = [];
+        $leadsToUpdate = $this->getLeadsToUpdate($object, $fields, $totalToUpdate, $fromDate, $toDate, $integrationEntities);
+
+        foreach ($leadsToUpdate as $key => $lead) {
+            $progress->advance();
+            $leadData[$lead['integration_entity_id']] = $this->getLeadDataForUpdate($lead, $object, $availableFields, $config);
+            ++$rowNum;
+
+            if ($maxRecords === $rowNum) {
+                $this->getApiHelper()->updateLeads($leadData, $object);
+                $leadData = [];
+                $rowNum = 0;
             }
         }
 
-        $fields = implode(', l.', $queryFields);
-        $fields = 'l.' . $fields;
+        $this->getApiHelper()->updateLeads($leadData, $object);
 
-        $availableFields = $this->getAvailableLeadFields(['feature_settings' => ['objects' => [$object]]]);
-        $fieldsToUpdate[$object] = array_values(array_intersect(array_keys($availableFields[$object]), $fieldsToUpdateInCrm));
-        $fieldsToUpdate[$object] = array_intersect_key($config[$recordFields], array_flip($fieldsToUpdate[$object]));
-
-        $progress = false;
-
-        $internalEntity = $object === 'company' ? 'company' : 'lead';
-
-        $totalToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, false, $fromDate, $toDate, [$object]);
-        if (is_array($totalToUpdate)) {
-            $totalToUpdate = array_sum($totalToUpdate);
+        if (count($integrationEntities)) {
+            $this->em->getRepository('MauticPluginBundle:IntegrationEntity')->saveEntities($integrationEntities);
+            $this->em->clear(IntegrationEntity::class);
         }
 
-        $totalToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, false, $fromDate, $toDate, $internalEntity);
-        if (is_array($totalToCreate)) {
-            $totalToCreate = array_sum($totalToCreate);
+        return count($leadsToUpdate);
+    }
+
+    private function createLeads($object, $fields, $totalToCreate, $fromDate, $toDate, $availableFields, $config, $maxRecords, ProgressUpdater $progress) {
+        $leadData = [];
+        $rowNum = 0;
+        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
+        $leadsToCreate = $this->getLeadsToCreate($object, $fields, $totalToCreate, $fromDate, $toDate);
+
+        foreach ($leadsToCreate as $lead) {
+            $progress->advance();
+            $leadData[$lead['internal_entity_id']] = $this->getLeadDataForCreate($lead, $object, $availableFields, $config);
+            ++$rowNum;
+
+            if ($maxRecords === $rowNum) {
+                $ids = $this->getApiHelper()->createLeads($leadData, $object);
+                $this->createIntegrationEntities($ids, $object, $integrationEntityRepo);
+                $leadData = [];
+                $rowNum = 0;
+            }
         }
 
-        $totalCount = $totalToCreate + $totalToUpdate;
+        $ids = $this->getApiHelper()->createLeads($leadData, $object);
+        $this->createIntegrationEntities($ids, $object, $integrationEntityRepo);
 
-        if (defined('IN_MAUTIC_CONSOLE') && $totalToUpdate + $totalToCreate) {
-            $output = new ConsoleOutput();
-            $output->writeln("About $totalToUpdate to update and about $totalToCreate to create/update");
-            $progress = new ProgressBar($output, $totalCount);
-        }
+        return count($leadsToCreate);
+    }
 
-        $leadsToCreateInNs = [];
+    private function getLeadDataForUpdate($lead, $object, $availableFields, $config) {
+        $fieldToCheck = $object === 'company' ? 'companyname' : 'email';
+        $recordFields = $object === 'company' ? 'companyFields' : 'leadFields';
+        $fieldsToUpdate = $this->getFieldsToUpdate($config, $availableFields, $recordFields);
+        $existingRecord = $this->getExistingRecord($fieldToCheck, $lead[$fieldToCheck], $object);
+        $objectFields = $this->prepareFieldsForPush($availableFields);
+        $fieldsToUpdate = $this->getBlankFieldsToUpdate($fieldsToUpdate, $existingRecord, $objectFields, $config);
+        return $this->getMappedFields($fieldsToUpdate, $lead, $availableFields, true);
+    }
+
+    private function getLeadDataForCreate($lead, $object, $availableFields, $config) {
+        $recordFields = $object === 'company' ? 'companyFields' : 'leadFields';
+        return $this->getMappedFields($config[$recordFields], $lead, $availableFields);
+    }
+
+    private function getFieldsToUpdate($config, $availableFields, $recordFields) {
+        $fieldsToUpdateInCrm = isset($config['update_mautic']) ? array_keys($config['update_mautic'], 0) : [];
+        $fieldsToUpdate = array_values(array_intersect(array_keys($availableFields), $fieldsToUpdateInCrm));
+
+        return array_intersect_key($config[$recordFields], array_flip($fieldsToUpdate));
+    }
+
+    private function getLeadsToUpdate($object, $fields, $totalToUpdate, $fromDate, $toDate, &$integrationEntities) {
         $leadsToUpdateInNs = [];
-        $integrationEntities = [];
-        $fieldToCheck = $object === 'company' ? 'companyName' : 'email';
-        $leadsToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, $totalToUpdate, $fromDate, $toDate, $object, [])[$object];
+        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
+        $fieldToCheck = $object === 'company' ? 'companyname' : 'email';
+        $internalEntity = $object === 'company' ? 'company' : 'lead';
+        $leadsToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, $totalToUpdate, $fromDate, $toDate, [$object])[$object];
 
         if (is_array($leadsToUpdate)) {
-            $totalUpdated += count($leadsToUpdate);
-
             foreach ($leadsToUpdate as $lead) {
                 if (!empty($lead[$fieldToCheck])) {
                     $key = mb_strtolower($this->cleanPushData($lead[$fieldToCheck]));
@@ -545,13 +600,18 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                 }
             }
         }
-        unset($leadsToUpdate);
 
+        return $leadsToUpdateInNs;
+    }
+
+    private function getLeadsToCreate($object, $fields, $totalToCreate, $fromDate, $toDate) {
+        $leadsToCreateInNs = [];
+        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
+        $fieldToCheck = $object === 'company' ? 'companyname' : 'email';
+        $internalEntity = $object === 'company' ? 'company' : 'lead';
         $leadsToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, $totalToCreate, $fromDate, $toDate, $internalEntity);
 
         if (is_array($leadsToCreate)) {
-            $totalCreated += count($leadsToCreate);
-
             foreach ($leadsToCreate as $lead) {
                 if (!empty($lead[$fieldToCheck])) {
                     $key = mb_strtolower($this->cleanPushData($lead[$fieldToCheck]));
@@ -561,66 +621,50 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                 }
             }
         }
-        unset($leadsToCreate);
 
-        if (count($integrationEntities)) {
-            $integrationEntityRepo->saveEntities($integrationEntities);
-            $this->em->clear(IntegrationEntity::class);
-        }
+        return $leadsToCreateInNs;
+    }
 
-        $leadData = [];
-        $rowNum = 0;
-
-        foreach ($leadsToUpdateInNs as $key => $lead) {
-            if (defined('IN_MAUTIC_CONSOLE') && $progress) {
-                $progress->advance();
-            }
-
-            $existingRecord = $this->getExistingRecord($fieldToCheck, $lead[$fieldToCheck], $object);
-            $objectFields = $this->prepareFieldsForPush($availableFields[$object]);
-            $fieldsToUpdate[$object] = $this->getBlankFieldsToUpdate($fieldsToUpdate[$object], $existingRecord, $objectFields, $config);
-            $mappedData = $this->getMappedFields($fieldsToUpdate[$object], $lead, $availableFields[$object], true);
-            $leadData[$lead['integration_entity_id']] = $mappedData;
-
-            ++$rowNum;
-
-            if ($maxRecords === $rowNum) {
-                $this->getApiHelper()->updateLeads($leadData, $object);
-                $leadData = [];
-                $rowNum = 0;
+    private function getFields($queryFields) {
+        foreach ($queryFields as $index => $queryField) {
+            if ($queryField === 'mauticContactIsContactableByEmail') {
+                unset($queryFields[$index]);
             }
         }
 
-        $this->getApiHelper()->updateLeads($leadData, $object);
-        $leadData = [];
-        $rowNum = 0;
+        $fields = implode(', l.', $queryFields);
+        return 'l.' . $fields;
+    }
 
-        foreach ($leadsToCreateInNs as $lead) {
-            if (defined('IN_MAUTIC_CONSOLE') && $progress) {
-                $progress->advance();
-            }
+    private function getTotalCounts($object, $fields, $fromDate, $toDate, $maxRecords) {
+        $internalEntity = $object === 'company' ? 'company' : 'lead';
+        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
 
-            $mappedData = $this->getMappedFields($config[$recordFields], $lead, $availableFields[$object]);
-            $leadData[$lead['internal_entity_id']] = $mappedData;
+        $totalToUpdate = $integrationEntityRepo->findLeadsToUpdate($this->getName(), $internalEntity, $fields, false, $fromDate, $toDate, [$object]);
+        $totalToUpdate = $this->getTotalLeads($totalToUpdate, $maxRecords);
 
-            ++$rowNum;
+        $totalToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, false, $fromDate, $toDate, $internalEntity);
+        $totalToCreate = $this->getTotalLeads($totalToCreate, $maxRecords);
 
-            if ($maxRecords === $rowNum) {
-                $ids = $this->getApiHelper()->createLeads($leadData, $object);
-                $this->createIntegrationEntities($ids, $object, $integrationEntityRepo);
-                $leadData = [];
-                $rowNum = 0;
-            }
-        }
-        $ids = $this->getApiHelper()->createLeads($leadData, $object);
-        $this->createIntegrationEntities($ids, $object, $integrationEntityRepo);
-
-        if ($progress) {
-            $progress->finish();
-            $output->writeln('');
+        $totalCount = $totalToCreate + $totalToUpdate;
+        if ($totalCount > $maxRecords) {
+            $totalCount = (int)$maxRecords;
         }
 
-        return [$totalUpdated, $totalCreated, $totalErrors];
+        return [$totalToUpdate, $totalToCreate, $totalCount];
+    }
+
+    private function getTotalLeads($leads, $maxRecords) {
+        $total = 0;
+
+        if (is_array($leads)) {
+            $total = array_sum($leads);
+        }
+        if ($leads > $maxRecords) {
+            $total = $maxRecords;
+        }
+
+        return (int) $total;
     }
 
     private function getMappedFields($fields, $lead, $availableFields, $skipEmpty = false) {
