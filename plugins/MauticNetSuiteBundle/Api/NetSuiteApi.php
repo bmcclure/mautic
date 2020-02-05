@@ -4,6 +4,7 @@ namespace MauticPlugin\MauticNetSuiteBundle\Api;
 
 require_once('NetSuite/Exception/NetSuiteApiException.php');
 
+use Mautic\LeadBundle\Entity\Lead;
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
@@ -637,6 +638,20 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $this->queryCache[$object][$field][$value];
+    }
+
+    /**
+     * @param array $mappedData
+     * @param Lead|array $lead
+     */
+    public function createLead($mappedData, $lead)
+    {
+        // @todo Implement function
+    }
+
+    public function updateLead($mappedData, $integrationEntityId)
+    {
+        // @todo Implement function
     }
 
     /**
