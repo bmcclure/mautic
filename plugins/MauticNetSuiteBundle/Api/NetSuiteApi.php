@@ -6,9 +6,11 @@ require_once('NetSuite/Exception/NetSuiteApiException.php');
 
 use Mautic\LeadBundle\Entity\Lead;
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
+use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\FieldHelper;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
 use NetSuite\Classes\AddListResponse;
+use NetSuite\Classes\BaseRef;
 use NetSuite\Classes\BooleanCustomFieldRef;
 use NetSuite\Classes\Contact;
 use NetSuite\Classes\ContactSearchBasic;
@@ -19,6 +21,9 @@ use NetSuite\Classes\CustomFieldRef;
 use NetSuite\Classes\CustomizationFieldType;
 use NetSuite\Classes\CustomizationRefList;
 use NetSuite\Classes\CustomizationType;
+use NetSuite\Classes\CustomRecord;
+use NetSuite\Classes\CustomRecordSearchBasic;
+use NetSuite\Classes\CustomRecordType;
 use NetSuite\Classes\DateCustomFieldRef;
 use NetSuite\Classes\EntityCustomField;
 use NetSuite\Classes\GetCustomizationIdRequest;
@@ -27,6 +32,7 @@ use NetSuite\Classes\GetCustomizationType;
 use NetSuite\Classes\GetListRequest;
 use NetSuite\Classes\GetRequest;
 use NetSuite\Classes\GetResponse;
+use NetSuite\Classes\ListOrRecordRef;
 use NetSuite\Classes\LongCustomFieldRef;
 use NetSuite\Classes\ReadResponse;
 use NetSuite\Classes\ReadResponseList;
@@ -146,11 +152,16 @@ class NetSuiteApi extends CrmApi {
                         continue;
                     }
 
+                    $selectRecordType = ($record->selectRecordType instanceof RecordRef)
+                        ? $this->getRecordType($record->selectRecordType->internalId)
+                        : null;
+
                     $fields[$record->scriptId] = $this->fieldDefinition(
                         $record->scriptId,
                         $record->label,
                         $record->isMandatory,
-                        $this->getFieldDataType($record->fieldType)
+                        $this->getFieldDataType($record->fieldType),
+                        $selectRecordType
                     );
                 }
             }
@@ -159,6 +170,83 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $this->apiFields[$object];
+    }
+
+    private function getRecordType($recordTypeId) {
+        $cache = $this->integration->getCache();
+        $recordTypes = $cache->get('netsuite_record_types');
+        $updateCache = false;
+
+        if (empty($recordTypes)) {
+            $recordTypes = [
+                -112 => 'account',
+                -105 => 'accountingperiod',
+                -242 => 'bin',
+                -22 => 'phonecall',
+                -24 => 'campaign',
+                -23 => 'supportcase',
+                -101 => 'classification',
+                -108 => 'competitor',
+                -6 => 'contact',
+                -2 => 'customer',
+                -109 => 'customercategory',
+                -102 => 'department',
+                -120 => 'emailtemplate',
+                -4 => 'employee',
+                -111 => 'employeetype',
+                -104 => 'customerstatus',
+                -20 => 'calendarevent',
+                -26 => 'issue',
+                -10 => 'item',
+                -7 => 'job',
+                -103 => 'location',
+                -31 => 'opportunity',
+                -5 => 'partner',
+                -115 => 'issueproduct',
+                -113 => 'issueproductversion',
+                -118 => 'role',
+                -117 => 'subsidiary',
+                -21 => 'task',
+                -30 => 'transaction',
+                -3 => 'vendor',
+                -110 => 'vendorcategory',
+            ];
+        }
+
+        if (!array_key_exists($recordTypeId, $recordTypes)) {
+            if ($recordTypeId <= -1) {
+                throw new NetSuiteApiException('Unknown record type ' . $recordTypeId);
+            }
+
+            $recordType = null;
+            $service = $this->getNetSuiteService();
+            $ref = new RecordRef();
+            $ref->internalId = $recordTypeId;
+            $ref->type = 'customRecordType';
+            $request = new GetRequest();
+            $request->baseRef = $ref;
+            /** @var GetResponse $response */
+            $response = $service->get($request);
+
+            /** @var ReadResponse $readResponse */
+            $readResponse = $response->readResponse;
+
+            /** @var Status $status */
+            $status = $readResponse->status;
+
+            if ($status->isSuccess) {
+                /** @var CustomRecordType $record */
+                $record = $readResponse->record;
+                $recordTypes[$recordTypeId] = $record->scriptId;
+                $updateCache = true;
+            }
+        }
+
+        if ($updateCache) {
+            $cache->set('netsuite_record_types', $recordTypes);
+        }
+
+        return $recordTypes[$recordTypeId];
     }
 
     /**
@@ -290,12 +378,15 @@ class NetSuiteApi extends CrmApi {
      *
      * @return array
      */
-    private function fieldDefinition($id, $label, $required = false, $type = NetSuiteIntegration::FIELD_TYPE_STRING) {
+    private function fieldDefinition($id, $label, $required = false, $type = NetSuiteIntegration::FIELD_TYPE_STRING, $selectRecordType = null) {
         return [
             'type' => $type,
             'label' => $label,
             'required' => $required,
             'dv' => $id,
+            'extra' => [
+                'selectRecordType' => $selectRecordType,
+            ]
         ];
     }
 
@@ -479,6 +570,7 @@ class NetSuiteApi extends CrmApi {
         $settings = [];
         $settings['feature_settings']['objects'] = [$object];
         $fields = $this->integration->getAvailableLeadFields($settings)[$object];
+        $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
 
         $items = [];
 
@@ -493,14 +585,7 @@ class NetSuiteApi extends CrmApi {
 
             foreach (array_keys($fields) as $field) {
                 if (property_exists($record, $field)) {
-                    $value = $record->{$field};
-
-                    if ($value instanceof RecordRef) {
-                        $values[$field] = $value->internalId;
-                    } else {
-                        $values[$field] = $value;
-                    }
-
+                    $values[$field] = $record->{$field};
                 } else {
                     /** @var CustomFieldRef $customField */
                     foreach ($customFieldList->customField as $customField) {
@@ -513,6 +598,9 @@ class NetSuiteApi extends CrmApi {
                     }
                 }
 
+                if (isset($values[$field]) && ($values[$field] instanceof RecordRef || $values[$field] instanceof ListOrRecordRef)) {
+                    $values[$field] = $fieldHelper->prepareReferenceFieldForMautic($values[$field], $fields[$field], $object);
+                }
             }
 
             if ($object === 'contacts' && !empty($record->company)) {
@@ -819,6 +907,9 @@ class NetSuiteApi extends CrmApi {
             $value = $this->formatNetSuiteDate($value);
         } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
             $value = $this->formatNetSuiteDate($value, false);
+        } elseif ($value instanceof ListOrRecordRef) {
+            $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
+            $value = $fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
         }
 
         $recordRefs = [
@@ -833,6 +924,10 @@ class NetSuiteApi extends CrmApi {
             $recordRef->internalId = $value;
         }
 
+        return $value;
+    }
+
+    private function preprocessValueForMautic($value, $field, $object) {
         return $value;
     }
 
@@ -882,5 +977,44 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $date->format($format);
+    }
+
+    public function createLeadActivity(array $activity, $object) {
+        $service = $this->getNetSuiteService();
+
+
+    }
+
+    public function getRecordId($recordType, $name) {
+        $service = $this->getNetSuiteService();
+
+        $searchRecord = new CustomRecordSearchBasic();
+        $searchRecord->name = $name;
+        $searchRecord->recType = $recordType;
+
+        $request = new SearchRequest();
+        $request->searchRecord = $searchRecord;
+
+        /** @var SearchResponse $response */
+        $response = $service->search($request);
+
+        /** @var SearchResult $searchResult */
+        $searchResult = $response->searchResult;
+
+        /** @var Status $status */
+        $status = $searchResult->status;
+
+        $id = null;
+
+        if ($status->isSuccess && $searchResult->totalRecords > 0) {
+            /** @var RecordList $recordList */
+            $recordList = $searchResult->recordList;
+            $records = $recordList->record;
+            /** @var CustomRecord $record */
+            $record = reset($records);
+            $id = $record->internalId;
+        }
+
+        return $id;
     }
 }

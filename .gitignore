@@ -96,3 +96,6 @@
 !/themes/blank-big.png
 
 /translations
+
+/db.sql
+/gsc_mautic.sql
