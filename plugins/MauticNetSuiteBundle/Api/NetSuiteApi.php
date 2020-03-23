@@ -10,7 +10,6 @@ use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\FieldHelper;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
 use NetSuite\Classes\AddListResponse;
-use NetSuite\Classes\BaseRef;
 use NetSuite\Classes\BooleanCustomFieldRef;
 use NetSuite\Classes\Contact;
 use NetSuite\Classes\ContactSearchBasic;
@@ -18,6 +17,7 @@ use NetSuite\Classes\Customer;
 use NetSuite\Classes\CustomerSearchBasic;
 use NetSuite\Classes\CustomFieldList;
 use NetSuite\Classes\CustomFieldRef;
+use NetSuite\Classes\CustomFieldType;
 use NetSuite\Classes\CustomizationFieldType;
 use NetSuite\Classes\CustomizationRefList;
 use NetSuite\Classes\CustomizationType;
@@ -30,6 +30,7 @@ use NetSuite\Classes\GetCustomizationIdRequest;
 use NetSuite\Classes\GetCustomizationIdResult;
 use NetSuite\Classes\GetCustomizationType;
 use NetSuite\Classes\GetListRequest;
+use NetSuite\Classes\GetListResponse;
 use NetSuite\Classes\GetRequest;
 use NetSuite\Classes\GetResponse;
 use NetSuite\Classes\ListOrRecordRef;
@@ -48,6 +49,7 @@ use NetSuite\Classes\SearchResponse;
 use NetSuite\Classes\SearchResult;
 use NetSuite\Classes\SearchStringField;
 use NetSuite\Classes\SearchStringFieldOperator;
+use NetSuite\Classes\SelectCustomFieldRef;
 use NetSuite\Classes\Status;
 use NetSuite\Classes\StatusDetail;
 use NetSuite\Classes\StatusDetailType;
@@ -65,6 +67,35 @@ use NetSuite\NetSuiteService;
  */
 class NetSuiteApi extends CrmApi {
     public static $TIMEZONE = '-0700';
+    public static $EVENT_TYPE = 'customrecord_jc_mautic_event';
+    public static $EVENT_FIELD_MAP = [
+        'custrecord_jc_mautic_event_date' => [
+            'mauticId' => 'dateAdded',
+            'internalId' => 1256,
+            'type' => CustomizationFieldType::_datetime,
+        ],
+        'custrecord_jc_mautic_event_contact' => [
+            'mauticId' => 'contactId',
+            'internalId' => 1258,
+            'type' => CustomizationFieldType::_listRecord,
+        ],
+        'custrecord_jc_mautic_event_desc' => [
+            'mauticId' => 'description',
+            'internalId' => 1259,
+            'type' => CustomizationFieldType::_longText,
+        ],
+        'custrecord_jc_mautic_event_url' => [
+            'mauticId' => 'leadUrl',
+            'internalId' => 1260,
+            'type' => CustomizationFieldType::_hyperlink,
+        ],
+        'custrecord_jc_mautic_event_id' => [
+            'mauticId' => 'id',
+            'internalId' => 1261,
+            'type' => CustomizationFieldType::_freeFormText,
+        ],
+        'name' => 'name',
+    ];
 
     private $apiFields = [];
 
@@ -932,7 +963,7 @@ class NetSuiteApi extends CrmApi {
     }
 
     /**
-     * @param Customer|Contact $record
+     * @param Customer|Contact|CustomRecord $record
      * @param string $key
      * @param mixed $value
      * @param array $field
@@ -948,14 +979,16 @@ class NetSuiteApi extends CrmApi {
         $type = $field['type'];
         $ref = null;
 
-        if ($type === NetSuiteIntegration::FIELD_TYPE_BOOL) {
+        if ($type === NetSuiteIntegration::FIELD_TYPE_BOOL || $type === CustomizationFieldType::_checkBox) {
             $ref = new BooleanCustomFieldRef();
-        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_DATE || $type === NetSuiteIntegration::FIELD_TYPE_DATETIME) {
+        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_DATE || $type === NetSuiteIntegration::FIELD_TYPE_DATETIME || $type === CustomizationFieldType::_date || $type === CustomizationFieldType::_datetime) {
             $ref = new DateCustomFieldRef();
-        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_NUMBER) {
+        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_NUMBER || $type === CustomizationFieldType::_decimalNumber) {
             $ref = new LongCustomFieldRef();
-        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_STRING) {
+        } elseif ($type === NetSuiteIntegration::FIELD_TYPE_STRING || $type === CustomizationFieldType::_freeFormText) {
             $ref = new StringCustomFieldRef();
+        } elseif ($type === CustomizationFieldType::_listRecord) {
+            $ref = new SelectCustomFieldRef();
         }
 
         if ($ref !== null) {
@@ -977,12 +1010,6 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $date->format($format);
-    }
-
-    public function createLeadActivity(array $activity, $object) {
-        $service = $this->getNetSuiteService();
-
-
     }
 
     public function getRecordId($recordType, $name) {
@@ -1016,5 +1043,150 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $id;
+    }
+
+    public function createLeadActivity(array $activity, $object) {
+        if (!empty($activity)) {
+            $nsRecords = $this->getNsActivityRecords($activity);
+            $ids = array_keys($nsRecords);
+            $exists = $this->recordsExist(self::$EVENT_TYPE, 'externalId', $ids);
+            $idsToCreate = array_filter($exists);
+            $nsRecords = array_intersect_key($nsRecords, $idsToCreate);
+            $this->sendActivityToNetSuite($nsRecords);
+        }
+    }
+
+    private function getNsActivityRecords(array $activity) {
+        $nsRecords = [];
+
+        foreach ($activity as $contactId => $records) {
+            foreach ($records as $record) {
+                $nsRecord = [];
+
+                foreach (self::$EVENT_FIELD_MAP as $nsField => $mauticField) {
+                    $nsRecord[$nsField] = $this->getActivityValue($contactId, $record, $mauticField['mauticId']);
+                }
+
+                $nsRecords[$record['id']] = $nsRecord;
+            }
+        }
+
+        return $nsRecords;
+    }
+
+    private function getActivityValue($contactId, $record, $field) {
+        if ($field === 'contactId') {
+            $value = $this->getInternalId($contactId, 'contacts');
+        } else {
+            $value = $record[$field];
+        }
+
+        return $value;
+    }
+
+    public function recordsExist($recordType, $idField, $ids) {
+        $service = $this->getNetSuiteService();
+
+        $references = [];
+
+        $exists = [];
+
+        foreach ($ids as $id) {
+            $baseRef = new RecordRef();
+            $baseRef->type = $recordType;
+            $baseRef->{$idField} = $id;
+            $references[] = $baseRef;
+            $exists[$id] = false;
+        }
+
+        $request = new GetListRequest();
+        $request->baseRef = $references;
+
+        /** @var GetListResponse $response */
+        $response = $service->getList($request);
+
+        /** @var ReadResponseList $responseList */
+        $responseList = $response->readResponseList;
+
+        /** @var Status $responseStatus */
+        $responseStatus = $responseList->status;
+
+        if (!$responseStatus->isSuccess) {
+            /** @var StatusDetail $statusDetail */
+            $statusDetail = reset($responseStatus->statusDetail);
+            throw new NetSuiteApiException($statusDetail->message, (int) $statusDetail->code);
+        }
+
+        /** @var ReadResponse $readResponse */
+        foreach ($responseList->readResponse as $readResponse) {
+            /** @var Status $recordStatus */
+            $recordStatus = $readResponse->status;
+            if ($recordStatus->isSuccess) {
+                /** @var CustomRecord $record */
+                $record = $readResponse->record;
+                if (!empty($record->externalId)) {
+                    $exists[$record->externalId] = true;
+                }
+            }
+        }
+
+        return $exists;
+    }
+
+    private function sendActivityToNetSuite(array $records) {
+        $service = $this->getNetSuiteService();
+
+        $requestRecords = [];
+
+        foreach ($records as $id => $values) {
+            $record = new CustomRecord();
+            $record->externalId = $id;
+            $record->name = $values['name'];
+
+            foreach ($values as $key => $value) {
+                if ($key === 'name') {
+                    continue;
+                }
+
+                $field = self::$EVENT_FIELD_MAP[$key];
+                $value = $this->getCustomFieldValue($field, $value);
+                if ($value) {
+                    $this->addCustomFieldRef($record, $key, $value, $field);
+                }
+            }
+
+            $requestRecords[] = $record;
+        }
+
+        $request = new AddListRequest();
+        $request->record = $requestRecords;
+
+        $response = $service->addList($request);
+    }
+
+    private function getCustomFieldValue(array $field, $value) {
+        if ($field['type'] === CustomizationFieldType::_listRecord) {
+            $internalId = $value;
+            $value = new ListOrRecordRef();
+            $value->typeId = -6; // contact
+            $value->internalId = $internalId;
+        }
+
+        return $value;
+    }
+
+    private function getInternalId($mauticId, $object = 'contacts') {
+        $internalId = null;
+
+        if ($object === 'contacts') {
+            $repo = $this->integration->getIntegrationEntityRepository();
+            $integrationId = $repo->getIntegrationsEntityId($this->integration->getName(), $object, 'lead', $mauticId);
+
+            if (!empty($integrationId)) {
+                $internalId = $integrationId[0]['integration_entity_id'];
+            }
+        }
+
+        return $internalId;
     }
 }

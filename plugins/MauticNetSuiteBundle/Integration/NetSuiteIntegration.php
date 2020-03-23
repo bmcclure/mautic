@@ -175,7 +175,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
      * @return array|bool
      * @throws NetSuiteApiException
      */
-    public function getAvailableLeadFields($settings = [])
+    public function getAvailableLeadFields($settings = [], $ignoreCache = false)
     {
         $silenceExceptions = (isset($settings['silence_exceptions'])) ? $settings['silence_exceptions'] : true;
         $fields = [];
@@ -190,6 +190,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         if (!empty($objects) && $this->isAuthorized()) {
             foreach ($objects as $object) {
                 $settings['cache_suffix'] = '.' . $object;
+                //$settings['ignore_field_cache'] = $ignoreCache; // @todo add back later
                 $fields[$object] = parent::getAvailableLeadFields($settings);
 
                 if (empty($fields[$object])) {
