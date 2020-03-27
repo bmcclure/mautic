@@ -3,13 +3,19 @@
 namespace MauticPlugin\MauticNetSuiteBundle\Api;
 
 require_once('NetSuite/Exception/NetSuiteApiException.php');
+require_once('NetSuite/NetSuiteFields.php');
 
+use Exception;
 use Mautic\LeadBundle\Entity\Lead;
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
+use MauticPlugin\MauticCrmBundle\Integration\CrmAbstractIntegration;
+use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\Exception\NetSuiteApiException;
+use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\NetSuiteFields;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\FieldHelper;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
 use NetSuite\Classes\AddListResponse;
+use NetSuite\Classes\Address;
 use NetSuite\Classes\BooleanCustomFieldRef;
 use NetSuite\Classes\Contact;
 use NetSuite\Classes\ContactSearchBasic;
@@ -17,19 +23,11 @@ use NetSuite\Classes\Customer;
 use NetSuite\Classes\CustomerSearchBasic;
 use NetSuite\Classes\CustomFieldList;
 use NetSuite\Classes\CustomFieldRef;
-use NetSuite\Classes\CustomFieldType;
 use NetSuite\Classes\CustomizationFieldType;
-use NetSuite\Classes\CustomizationRefList;
-use NetSuite\Classes\CustomizationType;
 use NetSuite\Classes\CustomRecord;
 use NetSuite\Classes\CustomRecordRef;
 use NetSuite\Classes\CustomRecordSearchBasic;
-use NetSuite\Classes\CustomRecordType;
 use NetSuite\Classes\DateCustomFieldRef;
-use NetSuite\Classes\EntityCustomField;
-use NetSuite\Classes\GetCustomizationIdRequest;
-use NetSuite\Classes\GetCustomizationIdResult;
-use NetSuite\Classes\GetCustomizationType;
 use NetSuite\Classes\GetListRequest;
 use NetSuite\Classes\GetListResponse;
 use NetSuite\Classes\GetRequest;
@@ -98,7 +96,7 @@ class NetSuiteApi extends CrmApi {
         'name' => 'name',
     ];
 
-    private $apiFields = [];
+    private $fields;
 
     /** @var NetSuiteService */
     private $netSuiteService;
@@ -106,6 +104,12 @@ class NetSuiteApi extends CrmApi {
     private $queryCache = [];
 
     private $recordCache = [];
+
+    public function __construct(CrmAbstractIntegration $integration)
+    {
+        parent::__construct($integration);
+        $this->fields = new NetSuiteFields($integration->getCache(), $this);
+    }
 
     /**
      * @return array
@@ -145,198 +149,7 @@ class NetSuiteApi extends CrmApi {
      */
     public function getFields($object = 'contacts')
     {
-        $recordType = $this->getNetSuiteRecordType($object);
-
-        if (empty($this->apiFields[$recordType])) {
-            $service = $this->getNetSuiteService();
-
-            $request = new GetListRequest();
-            $request->baseRef = $this->getCustomFieldRefList()->customizationRef;
-
-            $response = $service->getList($request);
-
-            /** @var ReadResponseList $result */
-            $result = $response->readResponseList;
-
-            /** @var Status $status */
-            $status = $result->status;
-
-            if (!$status->isSuccess) {
-                throw new NetSuiteApiException($this->getErrorMessage($status));
-            }
-
-            /** @var ReadResponse[] $items */
-            $list = $result->readResponse;
-
-            $fields = [];
-
-            /** @var ReadResponse $readResponse */
-            foreach ($list as $readResponse) {
-                $record = $readResponse->record;
-
-                if ($record instanceof EntityCustomField) {
-                    $applies = [
-                        'contacts' => $record->appliesToContact,
-                        'company' => $record->appliesToCustomer,
-                    ];
-
-                    if ($record->isFormula || !$applies[$object]) {
-                        continue;
-                    }
-
-                    $referenceTypes = [
-                        RecordRef::class,
-                        ListOrRecordRef::class,
-                        CustomRecordRef::class
-                    ];
-
-                    $selectRecordType = null;
-                    foreach ($referenceTypes as $referenceType) {
-                        if ($record->selectRecordType instanceof $referenceType) {
-                            $selectRecordType = $this->getRecordType($record->selectRecordType->internalId);
-                            break;
-                        }
-                    }
-
-                    $fields[$record->scriptId] = $this->fieldDefinition(
-                        $record->scriptId,
-                        $record->label,
-                        $record->isMandatory,
-                        $this->getFieldDataType($record->fieldType),
-                        $selectRecordType
-                    );
-                }
-            }
-
-            $this->apiFields[$object] = array_merge($this->getDefaultFields($recordType), $fields);
-        }
-
-        return $this->apiFields[$object];
-    }
-
-    private function getRecordType($recordTypeId) {
-        $cache = $this->integration->getCache();
-        $recordTypes = $cache->get('netsuite_record_types');
-        $updateCache = false;
-
-        if (empty($recordTypes)) {
-            $recordTypes = [
-                -112 => 'account',
-                -105 => 'accountingperiod',
-                -242 => 'bin',
-                -22 => 'phonecall',
-                -24 => 'campaign',
-                -23 => 'supportcase',
-                -101 => 'classification',
-                -108 => 'competitor',
-                -6 => 'contact',
-                -2 => 'customer',
-                -109 => 'customercategory',
-                -102 => 'department',
-                -120 => 'emailtemplate',
-                -4 => 'employee',
-                -111 => 'employeetype',
-                -104 => 'customerstatus',
-                -20 => 'calendarevent',
-                -26 => 'issue',
-                -10 => 'item',
-                -7 => 'job',
-                -103 => 'location',
-                -31 => 'opportunity',
-                -5 => 'partner',
-                -115 => 'issueproduct',
-                -113 => 'issueproductversion',
-                -118 => 'role',
-                -117 => 'subsidiary',
-                -21 => 'task',
-                -30 => 'transaction',
-                -3 => 'vendor',
-                -110 => 'vendorcategory',
-            ];
-        }
-
-        if (!array_key_exists($recordTypeId, $recordTypes)) {
-            if ($recordTypeId <= -1) {
-                throw new NetSuiteApiException('Unknown record type ' . $recordTypeId);
-            }
-
-            $recordType = null;
-            $service = $this->getNetSuiteService();
-            $ref = new RecordRef();
-            $ref->internalId = $recordTypeId;
-            $ref->type = 'customRecordType';
-            $request = new GetRequest();
-            $request->baseRef = $ref;
-            /** @var GetResponse $response */
-            $response = $service->get($request);
-
-            /** @var ReadResponse $readResponse */
-            $readResponse = $response->readResponse;
-
-            /** @var Status $status */
-            $status = $readResponse->status;
-
-            if ($status->isSuccess) {
-                /** @var CustomRecordType $record */
-                $record = $readResponse->record;
-                $recordTypes[$recordTypeId] = $record->scriptId;
-                $updateCache = true;
-            }
-        }
-
-        if ($updateCache) {
-            $cache->set('netsuite_record_types', $recordTypes);
-        }
-
-        return $recordTypes[$recordTypeId];
-    }
-
-    /**
-     * @return CustomizationRefList
-     *
-     * @throws NetSuiteApiException
-     */
-    private function getCustomFieldRefList() {
-        $service = $this->getNetSuiteService();
-
-        $customizationType = new CustomizationType();
-        $customizationType->getCustomizationType = GetCustomizationType::entityCustomField;
-
-        $request = new GetCustomizationIdRequest();
-        $request->customizationType = $customizationType;
-        $request->includeInactives = false;
-
-        $response = $service->getCustomizationId($request);
-
-        /** @var GetCustomizationIdResult $result */
-        $result = $response->getCustomizationIdResult;
-
-        /** @var Status $status */
-        $status = $result->status;
-
-        if (!$status->isSuccess) {
-            throw new NetSuiteApiException($this->getErrorMessage($status));
-        }
-
-        return $result->customizationRefList;
-    }
-
-    /**
-     * @param string $fieldType
-     *
-     * @return string
-     */
-    protected function getFieldDataType($fieldType) {
-        $map = [
-            CustomizationFieldType::_checkBox => NetSuiteIntegration::FIELD_TYPE_BOOL,
-            CustomizationFieldType::_currency => NetSuiteIntegration::FIELD_TYPE_NUMBER,
-            CustomizationFieldType::_date => NetSuiteIntegration::FIELD_TYPE_DATE,
-            CustomizationFieldType::_datetime => NetSuiteIntegration::FIELD_TYPE_DATETIME,
-            CustomizationFieldType::_decimalNumber => NetSuiteIntegration::FIELD_TYPE_NUMBER,
-            CustomizationFieldType::_integerNumber => NetSuiteIntegration::FIELD_TYPE_NUMBER,
-        ];
-
-        return array_key_exists($fieldType, $map) ? $map[$fieldType] : NetSuiteIntegration::FIELD_TYPE_STRING;
+        return $this->fields->getFields($object);
     }
 
     /**
@@ -351,85 +164,6 @@ class NetSuiteApi extends CrmApi {
         ];
 
         return array_key_exists(strtolower($object), $map) ? $map[$object] : $object;
-    }
-
-    /**
-     * @param string $recordType
-     *
-     * @return array
-     */
-    protected function getDefaultFields($recordType) {
-        $fields = [];
-
-        if ($recordType === 'customer') {
-            $fields = [
-                'accountNumber' => $this->fieldDefinition('accountNumber', 'Account'),
-                'category' => $this->fieldDefinition('category', 'Category'),
-                'comments' => $this->fieldDefinition('comments', 'Comments'),
-                'companyName' => $this->fieldDefinition('companyName', 'Company Name', true),
-                'currency' => $this->fieldDefinition('currency', 'Currency'),
-                'email' => $this->fieldDefinition('email', 'Email'),
-                'emailPreference' => $this->fieldDefinition('emailPreference', 'Email Preference'),
-                'fax' => $this->fieldDefinition('fax', 'Fax'),
-                'firstName' => $this->fieldDefinition('firstName', 'First Name'),
-                'firstVisit' => $this->fieldDefinition('firstVisit', 'First Visit', false, NetSuiteIntegration::FIELD_TYPE_DATETIME),
-                'homePhone' => $this->fieldDefinition('homePhone', 'Home Phone'),
-                'keywords' => $this->fieldDefinition('keywords', 'Keywords'),
-                'language' => $this->fieldDefinition('language', 'Language'),
-                'lastName' => $this->fieldDefinition('lastName', 'Last Name'),
-                'leadSource' => $this->fieldDefinition('leadSource', 'Lead Source'),
-                'middleName' => $this->fieldDefinition('middleName', 'Middle Name'),
-                'mobilePhone' => $this->fieldDefinition('mobilePhone', 'Mobile Phone'),
-                'phone' => $this->fieldDefinition('phone', 'Phone'),
-                'salutation' => $this->fieldDefinition('salutation', 'Salutation'),
-                'startDate' => $this->fieldDefinition('startDate', 'Start Date', false, NetSuiteIntegration::FIELD_TYPE_DATE),
-                'territory' => $this->fieldDefinition('territory', 'Territory'),
-                'title' => $this->fieldDefinition('title', 'Title'),
-                'url' => $this->fieldDefinition('url', 'URL'),
-                'visits' => $this->fieldDefinition('visits', 'Visits', false, NetSuiteIntegration::FIELD_TYPE_NUMBER),
-                'entityStatus' => $this->fieldDefinition('entityStatus', 'Status', false, NetSuiteIntegration::FIELD_TYPE_STRING),
-            ];
-        } elseif ($recordType === 'contact') {
-            $fields = [
-                'comments' => $this->fieldDefinition('comments', 'Comments'),
-                //'company' => $this->fieldDefinition('company', 'Company', true),
-                'contactSource' => $this->fieldDefinition('contactSource', 'Contact Source'),
-                'dateCreated' => $this->fieldDefinition('dateCreated', 'Date Created', false, NetSuiteIntegration::FIELD_TYPE_DATETIME),
-                'email' => $this->fieldDefinition('email', 'Email', true),
-                'fax' => $this->fieldDefinition('fax', 'Fax'),
-                'firstName' => $this->fieldDefinition('firstName', 'First Name', true),
-                'homePhone' => $this->fieldDefinition('homePhone', 'Home Phone'),
-                'lastName' => $this->fieldDefinition('lastName', 'Last Name', true),
-                'middleName' => $this->fieldDefinition('middleName', 'Middle Name'),
-                'mobilePhone' => $this->fieldDefinition('mobilePhone', 'Mobile Phone'),
-                'officePhone' => $this->fieldDefinition('officePhone', 'Office Phone'),
-                'phone' => $this->fieldDefinition('phone', 'Phone'),
-                'salutation' => $this->fieldDefinition('salutation', 'Salutation'),
-                'title' => $this->fieldDefinition('title', 'Title'),
-            ];
-        }
-
-        return $fields;
-    }
-
-    /**
-     * @param string $id
-     * @param string $label
-     * @param bool $required
-     * @param string $type
-     *
-     * @return array
-     */
-    private function fieldDefinition($id, $label, $required = false, $type = NetSuiteIntegration::FIELD_TYPE_STRING, $selectRecordType = null) {
-        return [
-            'type' => $type,
-            'label' => $label,
-            'required' => $required,
-            'dv' => $id,
-            'extra' => [
-                'selectRecordType' => $selectRecordType,
-            ]
-        ];
     }
 
     /**
@@ -482,7 +216,7 @@ class NetSuiteApi extends CrmApi {
      *
      * @return SearchMoreWithIdResponse|SearchResponse
      *
-     * @throws \Exception
+     * @throws Exception
      */
     public function handleSearchRequest(SearchRecordBasic $search, array $query, $page = 1, $searchId = null) {
         $service = $this->getNetSuiteService();
@@ -520,7 +254,7 @@ class NetSuiteApi extends CrmApi {
      *
      * @return SearchDateField
      *
-     * @throws \Exception
+     * @throws Exception
      */
     private function getSearchDateField($query) {
         $searchDate = new SearchDateField();
@@ -587,7 +321,7 @@ class NetSuiteApi extends CrmApi {
         return $this->mapRecordValues($records, $object);
     }
 
-    private function getErrorMessage(Status $status) {
+    public function getErrorMessage(Status $status) {
         /** @var StatusDetail[] $details */
         $details = $status->statusDetail;
 
@@ -611,7 +345,7 @@ class NetSuiteApi extends CrmApi {
     private function mapRecordValues(array $records, $object) {
         $settings = [];
         $settings['feature_settings']['objects'] = [$object];
-        $fields = $this->integration->getAvailableLeadFields($settings)[$object];
+        $leadFields = $this->integration->getAvailableLeadFields($settings)[$object];
         $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
 
         $items = [];
@@ -625,9 +359,14 @@ class NetSuiteApi extends CrmApi {
                 'netsuite_id' => $record->internalId,
             ];
 
-            foreach (array_keys($fields) as $field) {
+            $address = $this->fields->getAddressRecord($record, $object);
+
+            foreach ($leadFields as $field => $fieldConfig) {
                 if (property_exists($record, $field)) {
                     $values[$field] = $record->{$field};
+                } elseif (!empty($fieldConfig['extra']['address_property'])) {
+                    $prop = $fieldConfig['extra']['address_property'];
+                    $values[$field] = $address instanceof Address ? $address->{$prop} : '';
                 } else {
                     /** @var CustomFieldRef $customField */
                     foreach ($customFieldList->customField as $customField) {
@@ -640,8 +379,8 @@ class NetSuiteApi extends CrmApi {
                     }
                 }
 
-                if (isset($values[$field]) && ($values[$field] instanceof RecordRef || $values[$field] instanceof ListOrRecordRef)) {
-                    $values[$field] = $fieldHelper->prepareReferenceFieldForMautic($values[$field], $fields[$field], $object);
+                if (isset($values[$field]) && ($values[$field] instanceof RecordRef || $values[$field] instanceof ListOrRecordRef || $values[$field] instanceof CustomRecordRef)) {
+                    $values[$field] = $fieldHelper->prepareReferenceFieldForMautic($values[$field], $leadFields[$field], $object);
                 }
             }
 
@@ -900,7 +639,6 @@ class NetSuiteApi extends CrmApi {
      * @param string|null $mauticId
      *
      * @return int
-     * @throws NetSuiteApiException
      */
     public function populateRecord($record, $values, $object, $updateId = null, $mauticId = null) {
         $modifiedFields = 0;
@@ -913,20 +651,31 @@ class NetSuiteApi extends CrmApi {
             $record->externalId = $mauticId;
         }
 
-        $fields = $this->getFields($object);
+        $settings = [];
+        $settings['feature_settings']['objects'] = [$object];
+        $leadFields = $this->integration->getAvailableLeadFields($settings);
         $recordType = $this->getNetSuiteRecordType($object);
-        $defaultFields = $this->getDefaultFields($recordType);
+        $defaultFields = $this->fields->getDefaultFields($recordType);
+        $address = $this->fields->getAddressRecord($record, $object, true);
 
         foreach ($values as $key => $value) {
-            if (!array_key_exists($key, $fields)) {
+            if (!array_key_exists($key, $leadFields)) {
                 continue;
             }
 
-            $field = $fields[$key];
+            $field = $leadFields[$key];
+
             $value = $this->preprocessValueForNetSuite($value, $field, $object);
 
             if (array_key_exists($key, $defaultFields)) {
-                $record->{$key} = $value;
+                if (!empty($field['extra']['address_component'])) {
+                    $component = $field['extra']['address_component'];
+                    if ($address instanceof Address) {
+                        $address->{$component} = $value;
+                    }
+                } else {
+                    $record->{$key} = $value;
+                }
             } else {
                 $this->addCustomFieldRef($record, $key, $value, $field);
             }
@@ -949,6 +698,8 @@ class NetSuiteApi extends CrmApi {
             $value = $this->formatNetSuiteDate($value);
         } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
             $value = $this->formatNetSuiteDate($value, false);
+        } elseif ($field['type'] === 'country') {
+            $value = $this->getNetSuiteCountry($value);
         } elseif ($value instanceof ListOrRecordRef) {
             $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
             $value = $fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
@@ -969,8 +720,28 @@ class NetSuiteApi extends CrmApi {
         return $value;
     }
 
+    private function getNetSuiteCountry($countryName) {
+        $country = '';
+
+        $countryOverrides = []; // @todo figure out discrepencies between Mautic country names and NetSuite country enum
+
+        if (!empty($countryName)) {
+            $country = str_replace('\'s', 's');
+            $country = preg_replace('/[[:^print:]]/', '', $country);
+            $country = trim($country);
+            $country = ucwords($country);
+            $country = str_replace(' ', '', $country);
+            $country = lcfirst($country);
+            $country = '_' . $country;
+        }
+
+        return $country;
+    }
+
     private function preprocessValueForMautic($value, $field, $object) {
         return $value;
+
+        // @todo replace country enum with full text, and call this function when syncing to Mautic
     }
 
     /**
@@ -1172,7 +943,7 @@ class NetSuiteApi extends CrmApi {
         $request = new AddListRequest();
         $request->record = $requestRecords;
 
-        $response = $service->addList($request);
+        $service->addList($request);
     }
 
     private function getCustomFieldValue(array $field, $value) {

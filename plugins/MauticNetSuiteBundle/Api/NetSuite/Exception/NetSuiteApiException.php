@@ -1,6 +1,6 @@
 <?php
 
-namespace MauticPlugin\MauticNetSuiteBundle\Api;
+namespace MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\Exception;
 
 use Exception;
 

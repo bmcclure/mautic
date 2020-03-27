@@ -12,8 +12,7 @@ use Mautic\PluginBundle\Entity\IntegrationEntity;
 use Mautic\PluginBundle\Entity\IntegrationEntityRepository;
 use MauticPlugin\MauticCrmBundle\Integration\CrmAbstractIntegration;
 use MauticPlugin\MauticNetSuiteBundle\Api\NetSuiteApi;
-use MauticPlugin\MauticNetSuiteBundle\Api\NetSuiteApiException;
-use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\FieldHelper;
+use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\Exception\NetSuiteApiException;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\ProgressUpdater;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -468,7 +467,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
             }
 
             $integrationEntityRepo->saveEntities($integrationEntities);
-            $this->em->clear('Mautic\PluginBundle\Entity\IntegrationEntity');
+            $this->em->clear(IntegrationEntity::class);
             $this->em->clear();
         }
 
@@ -485,7 +484,6 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     }
 
     private function formatDateForMautic($dateString) {
-        // @todo determine timezone consistency
         $date = new \DateTime($dateString);
         $date->setTimezone(new \DateTimeZone(date_default_timezone_get()));
         return $date->format('Y-m-d H:i:s');
