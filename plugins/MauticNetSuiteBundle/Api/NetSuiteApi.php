@@ -22,6 +22,7 @@ use NetSuite\Classes\CustomizationFieldType;
 use NetSuite\Classes\CustomizationRefList;
 use NetSuite\Classes\CustomizationType;
 use NetSuite\Classes\CustomRecord;
+use NetSuite\Classes\CustomRecordRef;
 use NetSuite\Classes\CustomRecordSearchBasic;
 use NetSuite\Classes\CustomRecordType;
 use NetSuite\Classes\DateCustomFieldRef;
@@ -183,9 +184,19 @@ class NetSuiteApi extends CrmApi {
                         continue;
                     }
 
-                    $selectRecordType = ($record->selectRecordType instanceof RecordRef)
-                        ? $this->getRecordType($record->selectRecordType->internalId)
-                        : null;
+                    $referenceTypes = [
+                        RecordRef::class,
+                        ListOrRecordRef::class,
+                        CustomRecordRef::class
+                    ];
+
+                    $selectRecordType = null;
+                    foreach ($referenceTypes as $referenceType) {
+                        if ($record->selectRecordType instanceof $referenceType) {
+                            $selectRecordType = $this->getRecordType($record->selectRecordType->internalId);
+                            break;
+                        }
+                    }
 
                     $fields[$record->scriptId] = $this->fieldDefinition(
                         $record->scriptId,
