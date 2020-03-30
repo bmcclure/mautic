@@ -723,16 +723,51 @@ class NetSuiteApi extends CrmApi {
     private function getNetSuiteCountry($countryName) {
         $country = '';
 
-        $countryOverrides = []; // @todo figure out discrepencies between Mautic country names and NetSuite country enum
+        $countryOverrides = [
+            'Åland Islands' => '_alandIslands',
+            'Bonaire, Saint Eustatius and Saba' => '_bonaireSaintEustatiusAndSaba',
+            'Brunei' => '_bruneiDarussalam',
+            'Croatia' => '_croatiaHrvatska',
+            'Democratic Republic of the Congo' => '_congoDemocraticPeoplesRepublic',
+            'Tahiti' => '_frenchPolynesia',
+            'Heard Island and McDonald Islands' => '_heardAndMcDonaldIslands',
+            'Holy See' => '_holySeeCityVaticanState',
+            'Iran' => '_iranIslamicRepublicOf',
+            'Ivory Coast' => '_coteDIvoire',
+            'Laos' => '_laoPeoplesDemocraticRepublic',
+            'Micronesia' => '_micronesiaFederalStateOf',
+            'Moldova' => '_moldovaRepublicOf',
+            'North Korea' => '_koreaDemocraticPeoplesRepublic',
+            'Palestine' => '_stateOfPalestine',
+            'Pitcairn' => '_pitcairnIsland',
+            'Republic of the Congo' => '_congoRepublicOf',
+            'Réunion' => '_reunionIsland',
+            'Russia' => '_russianFederation',
+            'Saint Helena, Ascension and Tristan da Cunha' => '_saintHelena',
+            'Yugoslavia' => '_serbia',
+            'Slovakia' => '_slovakRepublic',
+            'South Georgia and the South Sandwich Islands' => '_southGeorgia',
+            'South Korea' => '_koreaRepublicOf',
+            'Svalbard and Jan Mayen' => '_svalbardAndJanMayenIslands',
+            'Syria' => '_syrianArabRepublic',
+            'Unknown' => '',
+            'Virgin Islands (British)' => '_virginIslandsBritish',
+            'Virgin Islands (U.S.)' => '_virginIslandsUSA',
+            'Wallis and Futuna' => '_wallisAndFutunaIslands',
+        ];
 
         if (!empty($countryName)) {
-            $country = str_replace('\'s', 's');
-            $country = preg_replace('/[[:^print:]]/', '', $country);
-            $country = trim($country);
-            $country = ucwords($country);
-            $country = str_replace(' ', '', $country);
-            $country = lcfirst($country);
-            $country = '_' . $country;
+            if (array_key_exists($countryName, $countryOverrides)) {
+                $country = $countryOverrides[$countryName];
+            } else {
+                $country = str_replace('\'s', 's');
+                $country = preg_replace('/[[:^print:]]/', '', $country);
+                $country = trim($country);
+                $country = ucwords($country);
+                $country = str_replace(' ', '', $country);
+                $country = lcfirst($country);
+                $country = '_' . $country;
+            }
         }
 
         return $country;
