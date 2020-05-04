@@ -4,13 +4,17 @@ namespace MauticPlugin\MauticNetSuiteBundle\Api;
 
 require_once('NetSuite/Exception/NetSuiteApiException.php');
 require_once('NetSuite/NetSuiteFields.php');
+require_once('NetSuite/NetSuiteCountries.php');
+require_once('NetSuite/NetSuiteStates.php');
 
 use Exception;
 use Mautic\LeadBundle\Entity\Lead;
 use MauticPlugin\MauticCrmBundle\Api\CrmApi;
 use MauticPlugin\MauticCrmBundle\Integration\CrmAbstractIntegration;
 use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\Exception\NetSuiteApiException;
+use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\NetSuiteCountries;
 use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\NetSuiteFields;
+use MauticPlugin\MauticNetSuiteBundle\Api\NetSuite\NetSuiteStates;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuite\FieldHelper;
 use MauticPlugin\MauticNetSuiteBundle\Integration\NetSuiteIntegration;
 use NetSuite\Classes\AddListRequest;
@@ -97,6 +101,7 @@ class NetSuiteApi extends CrmApi {
     ];
 
     private $fields;
+    private $fieldHelper;
 
     /** @var NetSuiteService */
     private $netSuiteService;
@@ -109,6 +114,7 @@ class NetSuiteApi extends CrmApi {
     {
         parent::__construct($integration);
         $this->fields = new NetSuiteFields($integration->getCache(), $this);
+        $this->fieldHelper = new FieldHelper($this->integration->getCache(), $this);
     }
 
     /**
@@ -346,7 +352,6 @@ class NetSuiteApi extends CrmApi {
         $settings = [];
         $settings['feature_settings']['objects'] = [$object];
         $leadFields = $this->integration->getAvailableLeadFields($settings)[$object];
-        $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
 
         $items = [];
 
@@ -379,8 +384,8 @@ class NetSuiteApi extends CrmApi {
                     }
                 }
 
-                if (isset($values[$field]) && ($values[$field] instanceof RecordRef || $values[$field] instanceof ListOrRecordRef || $values[$field] instanceof CustomRecordRef)) {
-                    $values[$field] = $fieldHelper->prepareReferenceFieldForMautic($values[$field], $leadFields[$field], $object);
+                if (isset($values[$field])) {
+                    $values[$field] = $this->preprocessValueForMautic($values[$field], $fieldConfig, $object);
                 }
             }
 
@@ -699,10 +704,11 @@ class NetSuiteApi extends CrmApi {
         } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
             $value = $this->formatNetSuiteDate($value, false);
         } elseif ($field['type'] === 'country') {
-            $value = $this->getNetSuiteCountry($value);
+            $value = NetSuiteCountries::convertToNetSuite($value);
+        } elseif ($field['type'] === 'state') {
+            $value = NetSuiteStates::convertToNetSuite($value);
         } elseif ($value instanceof ListOrRecordRef) {
-            $fieldHelper = new FieldHelper($this->integration->getCache(), $this);
-            $value = $fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
+            $value = $this->fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
         }
 
         $recordRefs = [
@@ -720,63 +726,20 @@ class NetSuiteApi extends CrmApi {
         return $value;
     }
 
-    private function getNetSuiteCountry($countryName) {
-        $country = '';
-
-        $countryOverrides = [
-            'Åland Islands' => '_alandIslands',
-            'Bonaire, Saint Eustatius and Saba' => '_bonaireSaintEustatiusAndSaba',
-            'Brunei' => '_bruneiDarussalam',
-            'Croatia' => '_croatiaHrvatska',
-            'Democratic Republic of the Congo' => '_congoDemocraticPeoplesRepublic',
-            'Tahiti' => '_frenchPolynesia',
-            'Heard Island and McDonald Islands' => '_heardAndMcDonaldIslands',
-            'Holy See' => '_holySeeCityVaticanState',
-            'Iran' => '_iranIslamicRepublicOf',
-            'Ivory Coast' => '_coteDIvoire',
-            'Laos' => '_laoPeoplesDemocraticRepublic',
-            'Micronesia' => '_micronesiaFederalStateOf',
-            'Moldova' => '_moldovaRepublicOf',
-            'North Korea' => '_koreaDemocraticPeoplesRepublic',
-            'Palestine' => '_stateOfPalestine',
-            'Pitcairn' => '_pitcairnIsland',
-            'Republic of the Congo' => '_congoRepublicOf',
-            'Réunion' => '_reunionIsland',
-            'Russia' => '_russianFederation',
-            'Saint Helena, Ascension and Tristan da Cunha' => '_saintHelena',
-            'Yugoslavia' => '_serbia',
-            'Slovakia' => '_slovakRepublic',
-            'South Georgia and the South Sandwich Islands' => '_southGeorgia',
-            'South Korea' => '_koreaRepublicOf',
-            'Svalbard and Jan Mayen' => '_svalbardAndJanMayenIslands',
-            'Syria' => '_syrianArabRepublic',
-            'Unknown' => '',
-            'Virgin Islands (British)' => '_virginIslandsBritish',
-            'Virgin Islands (U.S.)' => '_virginIslandsUSA',
-            'Wallis and Futuna' => '_wallisAndFutunaIslands',
-        ];
-
-        if (!empty($countryName)) {
-            if (array_key_exists($countryName, $countryOverrides)) {
-                $country = $countryOverrides[$countryName];
-            } else {
-                $country = str_replace('\'s', 's');
-                $country = preg_replace('/[[:^print:]]/', '', $country);
-                $country = trim($country);
-                $country = ucwords($country);
-                $country = str_replace(' ', '', $country);
-                $country = lcfirst($country);
-                $country = '_' . $country;
-            }
+    private function preprocessValueForMautic($value, $field, $object) {
+        if ($field['type'] === 'country') {
+            $value = NetSuiteCountries::convertToMautic($value);
         }
 
-        return $country;
-    }
+        if ($field['type'] === 'state') {
+            $value = NetSuiteStates::convertToMautic($value);
+        }
 
-    private function preprocessValueForMautic($value, $field, $object) {
+        if ($value instanceof RecordRef || $value instanceof ListOrRecordRef || $value instanceof CustomRecordRef) {
+            $value = $this->fieldHelper->prepareReferenceFieldForMautic($value, $field, $object);
+        }
+
         return $value;
-
-        // @todo replace country enum with full text, and call this function when syncing to Mautic
     }
 
     /**

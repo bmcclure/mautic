@@ -216,7 +216,7 @@ class NetSuiteFields
                 'address_addr2' => $this->addressFieldDefinition('addr2', 'Street Address 2'),
                 'address_addr3' => $this->addressFieldDefinition('addr3', 'Street Address 3'),
                 'address_city' => $this->addressFieldDefinition('city', 'City'),
-                'address_state' => $this->addressFieldDefinition('state', 'State'),
+                'address_state' => $this->addressFieldDefinition('state', 'State', false, 'state'),
                 'address_zip' => $this->addressFieldDefinition('zip', 'Zip'),
             ];
         }
@@ -359,12 +359,22 @@ class NetSuiteFields
      * @return Address|null
      */
     public function getAddressRecord($record, $object, $create = false) {
+        $address = null;
+
         /** @var ContactAddressbookList|CustomerAddressbookList $addressBookList */
         $addressBookList = $record->addressbookList;
 
-        $addressBooks = $addressBookList->addressbook;
+        if (!is_object($addressBookList) && $create) {
+            $record->addressbookList = ($object === 'contacts')
+                ? new ContactAddressbookList()
+                : new CustomerAddressbookList();
+        }
 
-        $address = null;
+        if (is_object($addressBookList)) {
+            $addressBooks = $addressBookList->addressbook;
+        } else {
+            $addressBooks = null;
+        }
 
         if (!isset($addressBooks) && $create) {
             $addressBook = ($object === 'contacts')

@@ -2,10 +2,11 @@
 
 namespace MauticPlugin\MauticNetSuiteBundle\Integration;
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'NetSuite' . DIRECTORY_SEPARATOR . 'ProgressUpdater.php';
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'NetSuite' . DIRECTORY_SEPARATOR . 'FieldHelper.php';
+require_once __DIR__ . '/NetSuite/ProgressUpdater.php';
+require_once __DIR__ . '/NetSuite/FieldHelper.php';
 
 use Mautic\CoreBundle\Helper\InputHelper;
+use Mautic\LeadBundle\Entity\Company;
 use Mautic\LeadBundle\Entity\Lead;
 use Mautic\LeadBundle\Helper\IdentifyCompanyHelper;
 use Mautic\PluginBundle\Entity\IntegrationEntity;
@@ -90,6 +91,22 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     public function appendToForm(&$builder, $data, $formArea)
     {
         if ($formArea === 'features') {
+            $builder->add(
+                'syncNew',
+                'choice',
+                [
+                    'choices' => [
+                        'syncNewFrom' => 'mautic.netsuite.sync_new_from',
+                        'syncNewTo' => 'mautic.netsuite.sync_new_to',
+                    ],
+                    'expanded' => true,
+                    'multiple' => true,
+                    'label' => 'mautic.netsuite.form.sync_new',
+                    'label_attr' => ['class' => 'control-label'],
+                    'empty_value' => false,
+                    'required' => false,
+                ]
+            );
             $builder->add(
                 'updateBlanks',
                 'choice',
@@ -350,6 +367,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         $mauticObjectReference = $object === 'company' ? 'company' : 'lead';
 
         $config = $this->mergeConfigToFeatureSettings();
+        $syncNew = isset($config['syncNewFrom']) ? $config['syncNewFrom'] : false;
 
         if (!in_array($object, ['company', 'contacts'])) {
             throw new NetSuiteApiException('Unsupported object type.');
@@ -383,7 +401,6 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                     $entity = $model->getEntity($integrationId[0]['internal_entity_id']);
                     $matchedFields = $this->populateMauticLeadData($entityData, $config, $object);
 
-                    print_r($matchedFields);
                     $priorityObject = $object === 'company' ? 'mautic_company' : 'mautic';
                     $fieldsToUpdateInMautic = $this->getPriorityFieldsForMautic($config, $object, $priorityObject);
 
@@ -409,30 +426,38 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
                         }
                     }
 
-                    print_r($newMatchedFields);
-
                     if (count($newMatchedFields)) {
                         $model->setFieldValues($entity, $newMatchedFields, false, false);
                         $model->saveEntity($entity, false);
                         $isModified = true;
                     }
-                } else {
+                } elseif ($syncNew) {
                     $entity = $object === 'company'
                         ? $this->getMauticCompany($entityData, $object)
                         : $this->getMauticLead($entityData);
                 }
 
-                if ($entity) {
+                if (!empty($entity)) {
                     if ($object !== 'company' && !empty($entityData['company'])) {
-                        $company = IdentifyCompanyHelper::identifyLeadsCompany(
-                            ['company' => $entityData['company']],
-                            null,
-                            $this->companyModel
-                        );
+                        $company = $this->getMauticCompanyByIntegrationId($entityData['companyId']);
 
-                        if (!empty($company[2])) {
-                            $this->companyModel->addLeadToCompany($company[2], $entity);
-                            $this->em->detach($company[2]);
+                        if (!empty($company)) {
+                            $entityData['company'] = $company->getName();
+                        } else {
+                            $companyResult = IdentifyCompanyHelper::identifyLeadsCompany(
+                                ['company' => $entityData['company']],
+                                null,
+                                $this->companyModel
+                            );
+
+                            if (!empty($companyResult[2])) {
+                                $company = $companyResult[2];
+                            }
+                        }
+
+                        if (!empty($company)) {
+                            $this->companyModel->addLeadToCompany($company, $entity);
+                            $this->em->detach($company);
                         }
                     }
 
@@ -474,6 +499,26 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return [$updated, $created];
     }
 
+    /**
+     * @param $companyId
+     *
+     * @return Company|null
+     */
+    private function getMauticCompanyByIntegrationId($companyId) {
+        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
+
+        $company = null;
+        $integrationId = $integrationEntityRepo->getIntegrationsEntityId($this->getName(), 'company',
+            'company', null, null, null, false, 0, 1,
+            "'".$companyId."'");
+
+        if (!empty($integrationId)) {
+            $company = $this->companyModel->getEntity($integrationId[0]['internal_entity_id']);
+        }
+
+        return $company;
+    }
+
     public function populateMauticLeadData($data, $config = [], $object = null)
     {
         if ($object !== 'company') {
@@ -503,6 +548,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         list($fromDate, $toDate) = $this->getSyncTimeframeDates($params);
 
         $config = $this->mergeConfigToFeatureSettings();
+        $syncNew = isset($config['syncNewTo']) ? $config['syncNewTo'] : false;
         $recordFields = $object === 'company' ? 'companyFields' : 'leadFields';
         $leadFields = array_unique(array_values($config[$recordFields]));
 
@@ -521,7 +567,11 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
 
         $progress = new ProgressUpdater($totalCount, "About $totalToUpdate to update and about $totalToCreate to create/update");
         $totalUpdated += $this->updateLeads($object, $fields, $totalToUpdate, $fromDate, $toDate, $availableFields, $config, $maxRecords, $progress);
-        $totalCreated += $this->createLeads($object, $fields, $totalToCreate, $fromDate, $toDate, $availableFields, $config, $maxRecords, $progress);
+
+        if ($syncNew) {
+            $totalCreated += $this->createLeads($object, $fields, $totalToCreate, $fromDate, $toDate, $availableFields, $config, $maxRecords, $progress);
+        }
+
         $progress->finish();
 
         return [$totalUpdated, $totalCreated, $totalErrors];
@@ -627,19 +677,24 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     }
 
     private function getLeadsToCreate($object, $fields, $totalToCreate, $fromDate, $toDate) {
+        $config = $this->mergeConfigToFeatureSettings();
+        $syncNew = isset($config['syncNewTo']) ? $config['syncNewTo'] : false;
         $leadsToCreateInNs = [];
-        $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
-        $fieldToCheck = $object === 'company' ? 'companyname' : 'email';
-        $internalEntity = $object === 'company' ? 'company' : 'lead';
-        $leadsToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, $totalToCreate, $fromDate, $toDate, $internalEntity);
 
-        if (is_array($leadsToCreate)) {
-            foreach ($leadsToCreate as $lead) {
-                if (!empty($lead[$fieldToCheck])) {
-                    $key = mb_strtolower($this->cleanPushData($lead[$fieldToCheck]));
-                    $lead = $this->getCompoundMauticFields($lead);
-                    $lead['integration_entity'] = $object;
-                    $leadsToCreateInNs[$key] = $lead;
+        if ($syncNew) {
+            $integrationEntityRepo = $this->em->getRepository('MauticPluginBundle:IntegrationEntity');
+            $fieldToCheck = $object === 'company' ? 'companyname' : 'email';
+            $internalEntity = $object === 'company' ? 'company' : 'lead';
+            $leadsToCreate = $integrationEntityRepo->findLeadsToCreate($this->getName(), $fields, $totalToCreate, $fromDate, $toDate, $internalEntity);
+
+            if (is_array($leadsToCreate)) {
+                foreach ($leadsToCreate as $lead) {
+                    if (!empty($lead[$fieldToCheck])) {
+                        $key = mb_strtolower($this->cleanPushData($lead[$fieldToCheck]));
+                        $lead = $this->getCompoundMauticFields($lead);
+                        $lead['integration_entity'] = $object;
+                        $leadsToCreateInNs[$key] = $lead;
+                    }
                 }
             }
         }
