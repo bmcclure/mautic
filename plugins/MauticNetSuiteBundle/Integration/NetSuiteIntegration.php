@@ -359,6 +359,18 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         return $executed;
     }
 
+    public function syncNewRecords($direction) {
+        $config = $this->mergeConfigToFeatureSettings();
+        $sync = false;
+
+        if (!empty($config['syncNew'])) {
+            $key = $direction === 'to' ? 'syncNewTo' : 'syncNewFrom';
+            $sync = in_array($key, $config['syncNew'], true);
+        }
+
+        return $sync;
+    }
+
     public function amendLeadDataBeforeMauticPopulate($data, $object, $params = [])
     {
         $updated = 0;
@@ -367,7 +379,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         $mauticObjectReference = $object === 'company' ? 'company' : 'lead';
 
         $config = $this->mergeConfigToFeatureSettings();
-        $syncNew = isset($config['syncNewFrom']) ? $config['syncNewFrom'] : false;
+        $syncNew = $this->syncNewRecords('from');
 
         if (!in_array($object, ['company', 'contacts'])) {
             throw new NetSuiteApiException('Unsupported object type.');
@@ -548,7 +560,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         list($fromDate, $toDate) = $this->getSyncTimeframeDates($params);
 
         $config = $this->mergeConfigToFeatureSettings();
-        $syncNew = isset($config['syncNewTo']) ? $config['syncNewTo'] : false;
+        $syncNew = $this->syncNewRecords('to');
         $recordFields = $object === 'company' ? 'companyFields' : 'leadFields';
         $leadFields = array_unique(array_values($config[$recordFields]));
 
@@ -677,8 +689,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
     }
 
     private function getLeadsToCreate($object, $fields, $totalToCreate, $fromDate, $toDate) {
-        $config = $this->mergeConfigToFeatureSettings();
-        $syncNew = isset($config['syncNewTo']) ? $config['syncNewTo'] : false;
+        $syncNew = $this->syncNewRecords('to');
         $leadsToCreateInNs = [];
 
         if ($syncNew) {
@@ -737,7 +748,7 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
         if (is_array($leads)) {
             $total = array_sum($leads);
         }
-        if ($leads > $maxRecords) {
+        if ($total > $maxRecords) {
             $total = $maxRecords;
         }
 

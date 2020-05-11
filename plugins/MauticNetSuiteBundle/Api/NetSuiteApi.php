@@ -658,7 +658,7 @@ class NetSuiteApi extends CrmApi {
 
         $settings = [];
         $settings['feature_settings']['objects'] = [$object];
-        $leadFields = $this->integration->getAvailableLeadFields($settings);
+        $leadFields = $this->integration->getAvailableLeadFields($settings)[$object];
         $recordType = $this->getNetSuiteRecordType($object);
         $defaultFields = $this->fields->getDefaultFields($recordType);
         $address = $this->fields->getAddressRecord($record, $object, true);
@@ -699,44 +699,64 @@ class NetSuiteApi extends CrmApi {
      * @return mixed
      */
     private function preprocessValueForNetSuite($value, $field, $object) {
-        if ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATETIME) {
-            $value = $this->formatNetSuiteDate($value);
-        } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
-            $value = $this->formatNetSuiteDate($value, false);
-        } elseif ($field['type'] === 'country') {
-            $value = NetSuiteCountries::convertToNetSuite($value);
-        } elseif ($field['type'] === 'state') {
-            $value = NetSuiteStates::convertToNetSuite($value);
-        } elseif ($value instanceof ListOrRecordRef) {
-            $value = $this->fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
-        }
+        if (is_array($value)) {
+            // Handle multiple-value fields
+            $newValue = [];
+            foreach ($value as $key => $singleValue) {
+                $newValue[$key] = $this->preprocessValueForNetSuite($value, $field, $object);
+            }
+            $value = $newValue;
+        } else {
+            if ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATETIME) {
+                $value = $this->formatNetSuiteDate($value);
+            } elseif ($field['type'] === NetSuiteIntegration::FIELD_TYPE_DATE) {
+                $value = $this->formatNetSuiteDate($value, false);
+            } elseif ($field['type'] === 'country') {
+                $value = NetSuiteCountries::convertToNetSuite($value);
+            } elseif ($field['type'] === 'state') {
+                $value = NetSuiteStates::convertToNetSuite($value);
+            } elseif ($value instanceof ListOrRecordRef) {
+                $value = $this->fieldHelper->prepareReferenceFieldForNetSuite($value, $field, $object);
+            }
 
-        $recordRefs = [
-            'company' => [
-                'entityStatus' => 'customerStatus',
-            ]
-        ];
+            $recordRefs = [
+                'company' => [
+                    'entityStatus' => 'customerStatus',
+                ]
+            ];
 
-        if (isset($recordRefs[$object][$field['dv']])) {
-            $recordRef = new RecordRef();
-            $recordRef->type = $recordRefs[$object][$field['dv']];
-            $recordRef->internalId = $value;
+            if (isset($recordRefs[$object][$field['dv']])) {
+                $recordRef = new RecordRef();
+                $recordRef->type = $recordRefs[$object][$field['dv']];
+                $recordRef->internalId = $value;
+            }
         }
 
         return $value;
     }
 
     private function preprocessValueForMautic($value, $field, $object) {
-        if ($field['type'] === 'country') {
-            $value = NetSuiteCountries::convertToMautic($value);
-        }
+        if (is_array($value)) {
+            // Handle multiple-value fields
+            $newValue = [];
 
-        if ($field['type'] === 'state') {
-            $value = NetSuiteStates::convertToMautic($value);
-        }
+            foreach ($value as $key => $singleValue) {
+                $newValue[$key] = $this->preprocessValueForMautic($singleValue, $field, $object);
+            }
 
-        if ($value instanceof RecordRef || $value instanceof ListOrRecordRef || $value instanceof CustomRecordRef) {
-            $value = $this->fieldHelper->prepareReferenceFieldForMautic($value, $field, $object);
+            $value = $newValue;
+        } else {
+            if ($field['type'] === 'country') {
+                $value = NetSuiteCountries::convertToMautic($value);
+            }
+
+            if ($field['type'] === 'state') {
+                $value = NetSuiteStates::convertToMautic($value);
+            }
+
+            if ($value instanceof RecordRef || $value instanceof ListOrRecordRef || $value instanceof CustomRecordRef) {
+                $value = $this->fieldHelper->prepareReferenceFieldForMautic($value, $field, $object);
+            }
         }
 
         return $value;
@@ -763,6 +783,7 @@ class NetSuiteApi extends CrmApi {
             $ref = new BooleanCustomFieldRef();
         } elseif ($type === NetSuiteIntegration::FIELD_TYPE_DATE || $type === NetSuiteIntegration::FIELD_TYPE_DATETIME || $type === CustomizationFieldType::_date || $type === CustomizationFieldType::_datetime) {
             $ref = new DateCustomFieldRef();
+            $value = $this->formatNetSuiteDate($value, true);
         } elseif ($type === NetSuiteIntegration::FIELD_TYPE_NUMBER || $type === CustomizationFieldType::_decimalNumber) {
             $ref = new LongCustomFieldRef();
         } elseif ($type === NetSuiteIntegration::FIELD_TYPE_STRING || $type === CustomizationFieldType::_freeFormText) {
