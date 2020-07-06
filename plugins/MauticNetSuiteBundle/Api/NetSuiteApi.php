@@ -250,9 +250,21 @@ class NetSuiteApi extends CrmApi {
             $request->pageIndex = $page;
         }
 
-        return $page === 1
-            ? $service->search($request)
-            : $service->searchMoreWithId($request);
+        $response = null;
+        $maxTries = 5;
+        $try = 1;
+        $success = false;
+
+        while (!$success && $try <= $maxTries) {
+            $response = $page === 1
+                ? $service->search($request)
+                : $service->searchMoreWithId($request);
+
+            $success = $this->responseIsSuccessful($response);
+            $try++;
+        }
+
+        return $response;
     }
 
     /**
@@ -292,6 +304,19 @@ class NetSuiteApi extends CrmApi {
         }
 
         return $searchDate;
+    }
+
+    /**
+     * @param SearchResponse|SearchMoreWithIdResponse $response
+     */
+    private function responseIsSuccessful($response) {
+        /** @var SearchResult $result */
+        $result = $response->searchResult;
+
+        /** @var Status $status */
+        $status = $result->status;
+
+        return $status->isSuccess;
     }
 
     /**

@@ -500,6 +500,8 @@ class NetSuiteIntegration extends CrmAbstractIntegration {
 
                     $this->em->detach($entity);
                     unset($entity);
+                } else {
+                    // @todo Report somewhere that the entity was not created.
                 }
             }
 
